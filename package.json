@@ -1,0 +1,25 @@
+{
+  "name": "swish-deposit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Swish Deposit: one-tap, passkey-authorised deposits into any Solana app.",
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "probe:foundation": "tsx scripts/probe-foundation.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@solana-program/system": "^0.13.0",
+    "@solana-program/token": "^0.15.0",
+    "@solana/kit": "^7.1.1",
+    "@solana/subscriptions": "^0.5.0"
+  }
+}
