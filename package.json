@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "probe:foundation": "tsx scripts/probe-foundation.ts",
-    "program:build": "cd programs/swish-deposit && cargo-build-sbf --tools-version v1.52 --sbf-out-dir ../../target/deploy",
+    "program:build": "cd programs/swish-deposit && cargo-build-sbf --tools-version v1.52 --sbf-out-dir ../../target/deploy && rm -f ../../target/deploy/swish_deposit-keypair.json",
     "program:test": "npm run program:build && cargo test -p swish-deposit"
   },
   "devDependencies": {
