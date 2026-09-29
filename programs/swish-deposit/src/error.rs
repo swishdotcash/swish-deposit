@@ -18,7 +18,7 @@ pub enum SwishError {
     MissingPasskeySignature,
     #[msg("The secp256r1 instruction must check exactly one signature, with all data inside itself")]
     MalformedPasskeySignature,
-    #[msg("The signature is not from this wallet's passkey")]
+    #[msg("The signature is not from this Swish ID's passkey")]
     WrongPasskey,
     #[msg("The passkey signed for a different site")]
     WrongRelyingParty,
@@ -28,8 +28,6 @@ pub enum SwishError {
     ClientDataMismatch,
     #[msg("The passkey signed a different deposit")]
     ChallengeMismatch,
-    #[msg("Wrong nonce")]
-    WrongNonce,
     #[msg("The signed deposit has expired")]
     SignatureExpired,
     #[msg("The deadline is too far in the future")]
@@ -40,4 +38,10 @@ pub enum SwishError {
     WrongDelegation,
     #[msg("A pull must be a top-level instruction")]
     CpiNotAllowed,
+    #[msg("This wallet is not linked to this Swish ID")]
+    WalletNotLinked,
+    #[msg("A receipt can only be closed after its deposit's deadline")]
+    ReceiptNotExpired,
+    #[msg("Unlink every wallet before closing a Swish ID")]
+    SwishIdHasWallets,
 }

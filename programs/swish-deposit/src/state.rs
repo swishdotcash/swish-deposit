@@ -16,7 +16,7 @@ pub struct Config {
     pub puller_bump: u8,
 }
 
-/// An integrator. Registered by the admin after screening.
+/// An integrator. Registered by the admin; `active` is the per-app switch.
 #[account]
 #[derive(InitSpace)]
 pub struct App {
@@ -25,26 +25,38 @@ pub struct App {
     pub bump: u8,
 }
 
-/// The one token account an app receives a given mint in.
+/// A user's Swish ID: one passkey, any number of linked wallets.
+/// Address: [`SWISH_ID_SEED`, sha256(passkey)].
 #[account]
 #[derive(InitSpace)]
-pub struct AppDestination {
-    pub app: Pubkey,
-    pub mint: Pubkey,
-    pub token_account: Pubkey,
+pub struct SwishId {
+    /// Compressed P-256 public key of the user's WebAuthn credential.
+    pub passkey: [u8; 33],
+    pub linked_wallets: u32,
+    /// Receives the rent back when the Swish ID is closed.
+    pub rent_payer: Pubkey,
     pub bump: u8,
 }
 
+/// A wallet a Swish ID may deposit from. Created only with that wallet's
+/// signature. Address: [`WALLET_SEED`, wallet], so a wallet belongs to at most
+/// one Swish ID.
 #[account]
 #[derive(InitSpace)]
-pub struct UserPasskey {
+pub struct LinkedWallet {
     pub wallet: Pubkey,
-    /// Compressed P-256 public key of the user's WebAuthn credential.
-    pub passkey: [u8; 33],
-    /// The nonce the next pull must sign. Starts at the registration slot, so
-    /// removing and registering again never reuses a nonce.
-    pub next_nonce: u64,
-    /// Receives the rent back when the passkey is removed.
+    pub swish_id: Pubkey,
+    pub rent_payer: Pubkey,
+    pub bump: u8,
+}
+
+/// Marks a deposit id as used. Address: [`RECEIPT_SEED`, deposit_id]. Can be
+/// closed once the deposit's deadline has passed, when the signature that
+/// named this id is useless anyway.
+#[account]
+#[derive(InitSpace)]
+pub struct DepositReceipt {
+    pub expires_at: i64,
     pub rent_payer: Pubkey,
     pub bump: u8,
 }
@@ -53,13 +65,4 @@ pub struct UserPasskey {
 pub enum PullKind {
     Fixed,
     Recurring,
-}
-
-impl PullKind {
-    pub fn as_u8(self) -> u8 {
-        match self {
-            PullKind::Fixed => 0,
-            PullKind::Recurring => 1,
-        }
-    }
 }

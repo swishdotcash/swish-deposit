@@ -15,7 +15,7 @@ use crate::{
     constants::*,
     error::SwishError,
     events::Deposited,
-    state::{App, AppDestination, Config, PullKind, UserPasskey},
+    state::{App, Config, DepositReceipt, LinkedWallet, PullKind, SwishId},
     webauthn::{verify_passkey_approval, PasskeyApproval, PullChallenge},
 };
 
@@ -24,15 +24,21 @@ const TOP_LEVEL: usize = 1;
 
 #[derive(AnchorSerialize, AnchorDeserialize)]
 pub struct PullArgs {
+    /// One-time id from our server; signed by the passkey, usable once.
+    pub deposit_id: [u8; 16],
+    /// Which allowance of the wallet to use. Not signed: both are the user's.
     pub kind: PullKind,
     pub amount: u64,
-    pub nonce: u64,
     pub expires_at: i64,
     pub client_data_json: Vec<u8>,
 }
 
 #[derive(Accounts)]
+#[instruction(args: PullArgs)]
 pub struct Pull<'info> {
+    /// Pays the receipt's rent (Swish, in production).
+    #[account(mut)]
+    pub payer: Signer<'info>,
     #[account(seeds = [CONFIG_SEED], bump = config.bump, constraint = !config.paused @ SwishError::Paused)]
     pub config: Box<Account<'info, Config>>,
     #[account(
@@ -41,17 +47,23 @@ pub struct Pull<'info> {
         constraint = app.active @ SwishError::AppInactive
     )]
     pub app: Box<Account<'info, App>>,
+    /// The passkey that signed must be this Swish ID's (checked in the handler).
+    pub swish_id: Box<Account<'info, SwishId>>,
     #[account(
-        seeds = [DESTINATION_SEED, app.key().as_ref(), mint.key().as_ref()],
-        bump = destination.bump
+        seeds = [WALLET_SEED, linked_wallet.wallet.as_ref()],
+        bump = linked_wallet.bump,
+        constraint = linked_wallet.swish_id == swish_id.key() @ SwishError::WalletNotLinked
     )]
-    pub destination: Box<Account<'info, AppDestination>>,
+    pub linked_wallet: Box<Account<'info, LinkedWallet>>,
+    /// Fails if this deposit id was used before.
     #[account(
-        mut,
-        seeds = [PASSKEY_SEED, user_passkey.wallet.as_ref()],
-        bump = user_passkey.bump
+        init,
+        payer = payer,
+        space = 8 + DepositReceipt::INIT_SPACE,
+        seeds = [RECEIPT_SEED, args.deposit_id.as_ref()],
+        bump
     )]
-    pub user_passkey: Box<Account<'info, UserPasskey>>,
+    pub receipt: Box<Account<'info, DepositReceipt>>,
     /// CHECK: our PDA; the delegatee of every allowance, signs the CPI.
     #[account(seeds = [PULLER_SEED], bump = config.puller_bump)]
     pub puller: UncheckedAccount<'info>,
@@ -64,16 +76,13 @@ pub struct Pull<'info> {
     #[account(
         mut,
         token::mint = mint,
-        token::authority = user_passkey.wallet,
+        token::authority = linked_wallet.wallet,
         token::token_program = token_program
     )]
     pub source: Box<InterfaceAccount<'info, TokenAccount>>,
-    #[account(
-        mut,
-        address = destination.token_account,
-        token::mint = mint,
-        token::token_program = token_program
-    )]
+    /// Any token account of the mint: the app's server chooses it (usually
+    /// the user's own account in the app) and the passkey signs it.
+    #[account(mut, token::mint = mint, token::token_program = token_program)]
     pub receiver: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(mint::token_program = token_program)]
     pub mint: Box<InterfaceAccount<'info, Mint>>,
@@ -86,6 +95,7 @@ pub struct Pull<'info> {
     /// CHECK: address pinned.
     #[account(address = INSTRUCTIONS_SYSVAR_ID)]
     pub instructions: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 pub fn handle_pull<'info>(ctx: Context<'info, Pull<'info>>, args: PullArgs) -> Result<()> {
@@ -102,40 +112,35 @@ pub fn handle_pull<'info>(ctx: Context<'info, Pull<'info>>, args: PullArgs) -> R
     );
 
     let accounts = &ctx.accounts;
-    let wallet = accounts.user_passkey.wallet;
-    require!(args.nonce == accounts.user_passkey.next_nonce, SwishError::WrongNonce);
+    let wallet = accounts.linked_wallet.wallet;
     check_delegation(accounts, args.kind, &wallet)?;
 
     let challenge = PullChallenge {
         cluster_tag: &accounts.config.cluster_tag,
         program_id: ctx.program_id,
-        wallet: &wallet,
-        delegation: &accounts.delegation.key(),
+        deposit_id: &args.deposit_id,
         app_id: &accounts.app.app_id,
         mint: &accounts.mint.key(),
         destination: &accounts.receiver.key(),
-        kind: args.kind.as_u8(),
         amount: args.amount,
-        nonce: args.nonce,
         expires_at: args.expires_at,
     }
     .hash();
     verify_passkey_approval(
         &accounts.instructions.to_account_info(),
         PasskeyApproval {
-            passkey: &accounts.user_passkey.passkey,
+            passkey: &accounts.swish_id.passkey,
             rp_id_hash: &accounts.config.rp_id_hash,
             challenge: &challenge,
             client_data_json: &args.client_data_json,
         },
     )?;
 
-    // Spend the nonce before moving money.
-    let user_passkey = &mut ctx.accounts.user_passkey;
-    user_passkey.next_nonce = user_passkey
-        .next_nonce
-        .checked_add(1)
-        .ok_or(SwishError::WrongNonce)?;
+    // The receipt was created by `init` above, so this id is now spent.
+    let receipt = &mut ctx.accounts.receipt;
+    receipt.expires_at = args.expires_at;
+    receipt.rent_payer = ctx.accounts.payer.key();
+    receipt.bump = ctx.bumps.receipt;
 
     let accounts = &ctx.accounts;
     let transfer_data = TransferData {
@@ -197,6 +202,8 @@ pub fn handle_pull<'info>(ctx: Context<'info, Pull<'info>>, args: PullArgs) -> R
     }
 
     emit!(Deposited {
+        deposit_id: args.deposit_id,
+        swish_id: accounts.swish_id.key(),
         wallet,
         app_id: accounts.app.app_id,
         mint: accounts.mint.key(),
@@ -204,7 +211,6 @@ pub fn handle_pull<'info>(ctx: Context<'info, Pull<'info>>, args: PullArgs) -> R
         delegation: accounts.delegation.key(),
         kind: args.kind,
         amount: args.amount,
-        nonce: args.nonce,
     });
     Ok(())
 }
@@ -238,6 +244,25 @@ fn check_delegation(accounts: &Pull, kind: PullKind, wallet: &Pubkey) -> Result<
             && mint == accounts.mint.key()
             && authority == accounts.subscription_authority.key(),
         SwishError::WrongDelegation
+    );
+    Ok(())
+}
+
+/// Anyone may close a receipt once its deposit's deadline has passed: the
+/// signature naming this id can no longer be used, so the id needs no guard.
+#[derive(Accounts)]
+pub struct CloseReceipt<'info> {
+    #[account(mut, has_one = rent_payer, close = rent_payer)]
+    pub receipt: Account<'info, DepositReceipt>,
+    /// CHECK: only receives lamports; must match `receipt.rent_payer`.
+    #[account(mut)]
+    pub rent_payer: UncheckedAccount<'info>,
+}
+
+pub fn handle_close_receipt(ctx: Context<CloseReceipt>) -> Result<()> {
+    require!(
+        Clock::get()?.unix_timestamp > ctx.accounts.receipt.expires_at,
+        SwishError::ReceiptNotExpired
     );
     Ok(())
 }

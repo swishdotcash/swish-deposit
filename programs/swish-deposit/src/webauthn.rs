@@ -105,19 +105,21 @@ pub fn verify_passkey_approval(instructions: &AccountInfo, approval: PasskeyAppr
     Ok(())
 }
 
-/// Everything a passkey approves for one pull. Every field is fixed-size, so
-/// the concatenation is unambiguous.
+/// Everything a passkey approves for one pull. Only things known BEFORE we
+/// know who the user is, so a single Face ID both identifies and approves:
+/// the program learns the user from the passkey that signed. Every field is
+/// fixed-size, so the concatenation is unambiguous.
+///
+/// Which linked wallet pays and which of its allowances is used are not
+/// signed: all of them are the user's own, each within its own limit.
 pub struct PullChallenge<'a> {
     pub cluster_tag: &'a [u8; 32],
     pub program_id: &'a Pubkey,
-    pub wallet: &'a Pubkey,
-    pub delegation: &'a Pubkey,
+    pub deposit_id: &'a [u8; 16],
     pub app_id: &'a [u8; 16],
     pub mint: &'a Pubkey,
     pub destination: &'a Pubkey,
-    pub kind: u8,
     pub amount: u64,
-    pub nonce: u64,
     pub expires_at: i64,
 }
 
@@ -127,18 +129,21 @@ impl PullChallenge<'_> {
             crate::constants::PULL_DOMAIN,
             self.cluster_tag,
             self.program_id.as_ref(),
-            self.wallet.as_ref(),
-            self.delegation.as_ref(),
+            self.deposit_id,
             self.app_id,
             self.mint.as_ref(),
             self.destination.as_ref(),
-            &[self.kind],
             &self.amount.to_le_bytes(),
-            &self.nonce.to_le_bytes(),
             &self.expires_at.to_le_bytes(),
         ])
         .to_bytes()
     }
+}
+
+/// The Swish ID address seed for a passkey (33 bytes is over the 32-byte seed
+/// limit, so it is hashed).
+pub fn passkey_seed(passkey: &[u8; 33]) -> [u8; 32] {
+    hash(passkey).to_bytes()
 }
 
 /// Unpadded base64url of 32 bytes (43 characters), as WebAuthn encodes the

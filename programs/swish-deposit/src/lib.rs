@@ -1,11 +1,12 @@
 //! Swish Deposit.
 //!
-//! A user sets up once: their wallet approves an allowance in the Solana
-//! Foundation Subscriptions & Allowances program with our `Puller` PDA as the
-//! only delegatee, and registers a passkey here. After that, every deposit is
-//! a pull that this program allows only when the transaction carries a
-//! signature from that passkey over the exact deposit (wallet, allowance, app,
-//! mint, destination, amount, nonce, deadline).
+//! A user's passkey is their Swish ID. Each wallet they link approves an
+//! allowance in the Solana Foundation Subscriptions & Allowances program with
+//! our `Puller` PDA as the only delegatee, and signs once to link itself to
+//! the Swish ID. After that, every deposit is a pull that this program allows
+//! only when the transaction carries a signature from that passkey over the
+//! exact deposit (a one-time deposit id, app, token, destination, amount,
+//! deadline), from a wallet linked to it.
 //!
 //! Nobody can move a user's money without their passkey, Swish included. The
 //! Foundation program caps every pull at what the user approved, and the user
@@ -59,29 +60,30 @@ pub mod swish_deposit {
         instructions::apps::handle_set_app_active(ctx, active)
     }
 
-    pub fn set_destination(ctx: Context<SetDestination>) -> Result<()> {
-        instructions::apps::handle_set_destination(ctx)
+    /// Signed by the wallet being linked. Creates the Swish ID for `passkey`
+    /// on first use. A sponsor may pay the rent.
+    pub fn link_wallet(ctx: Context<LinkWallet>, passkey: [u8; 33]) -> Result<()> {
+        instructions::wallets::handle_link_wallet(ctx, passkey)
     }
 
-    /// Signed by the user's wallet. A sponsor may pay the rent.
-    pub fn register_passkey(ctx: Context<RegisterPasskey>, passkey: [u8; 33]) -> Result<()> {
-        instructions::passkeys::handle_register_passkey(ctx, passkey)
+    /// Signed by the wallet. Rent goes back to whoever paid it.
+    pub fn unlink_wallet(ctx: Context<UnlinkWallet>) -> Result<()> {
+        instructions::wallets::handle_unlink_wallet(ctx)
     }
 
-    /// Signed by the user's wallet. Keeps the nonce, so nothing signed for the
-    /// old passkey can be replayed.
-    pub fn rotate_passkey(ctx: Context<RotatePasskey>, passkey: [u8; 33]) -> Result<()> {
-        instructions::passkeys::handle_rotate_passkey(ctx, passkey)
-    }
-
-    /// Signed by the user's wallet. Rent goes back to whoever paid it.
-    pub fn remove_passkey(ctx: Context<RemovePasskey>) -> Result<()> {
-        instructions::passkeys::handle_remove_passkey(ctx)
+    /// Anyone, once a Swish ID has no wallets left.
+    pub fn close_swish_id(ctx: Context<CloseSwishId>) -> Result<()> {
+        instructions::wallets::handle_close_swish_id(ctx)
     }
 
     /// Anyone may submit; it only works with the user's passkey signature in
     /// the instruction right before it.
     pub fn pull<'info>(ctx: Context<'info, Pull<'info>>, args: PullArgs) -> Result<()> {
         instructions::pull::handle_pull(ctx, args)
+    }
+
+    /// Anyone, once the deposit's deadline has passed.
+    pub fn close_receipt(ctx: Context<CloseReceipt>) -> Result<()> {
+        instructions::pull::handle_close_receipt(ctx)
     }
 }

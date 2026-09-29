@@ -4,6 +4,8 @@ use crate::state::PullKind;
 
 #[event]
 pub struct Deposited {
+    pub deposit_id: [u8; 16],
+    pub swish_id: Pubkey,
     pub wallet: Pubkey,
     pub app_id: [u8; 16],
     pub mint: Pubkey,
@@ -11,5 +13,4 @@ pub struct Deposited {
     pub delegation: Pubkey,
     pub kind: PullKind,
     pub amount: u64,
-    pub nonce: u64,
 }
