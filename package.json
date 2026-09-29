@@ -9,7 +9,9 @@
     "services/*"
   ],
   "scripts": {
-    "probe:foundation": "tsx scripts/probe-foundation.ts"
+    "probe:foundation": "tsx scripts/probe-foundation.ts",
+    "program:build": "cd programs/swish-deposit && cargo-build-sbf --tools-version v1.52 --sbf-out-dir ../../target/deploy",
+    "program:test": "npm run program:build && cargo test -p swish-deposit"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

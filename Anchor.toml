@@ -1,0 +1,19 @@
+[toolchain]
+anchor_version = "1.2.0"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+swish_deposit = "D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p"
+
+[programs.devnet]
+swish_deposit = "D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test -p swish-deposit"
