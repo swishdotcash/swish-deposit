@@ -13,17 +13,17 @@ import { createHmac } from "node:crypto";
 import { address, createNoopSigner, getBase64Decoder, getBase64Encoder, isAddress } from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
 import {
-  findFixedDelegationPda,
-  findSubscriptionAuthorityPda,
   getCreateFixedDelegationOverlayInstructionAsync,
   getInitSubscriptionAuthorityOverlayInstructionAsync,
+  getRevokeDelegationOverlayInstruction,
 } from "@solana/subscriptions";
 import { Router } from "express";
 import { z } from "zod";
 
 import { toBaseUnits } from "../amount.js";
 import { requirePublishableKey } from "../auth.js";
-import { linkWalletInstruction, linkedWalletPda, pullerPda, swishIdPda, TOKEN_PROGRAM } from "../chain/program.js";
+import { MAX_ALLOWANCE_NONCE } from "../chain/client.js";
+import { linkWalletInstruction, pullerPda, swishIdPda, TOKEN_PROGRAM } from "../chain/program.js";
 import { PasskeyError, compressPublicKey, fromB64url } from "../chain/webauthn.js";
 import { USDC_DECIMALS, type Deps } from "../context.js";
 import { HttpError, badRequest, conflict } from "../http.js";
@@ -115,31 +115,20 @@ export function setupRouter(deps: Deps): Router {
       return respond(res, "authorize", [ix]);
     }
 
-    const linked = await linkedWalletPda(walletAddress);
-    const [subscriptionAuthority] = await findSubscriptionAuthorityPda({ user: walletAddress, tokenMint: mint });
-    const [delegation] = await findFixedDelegationPda({
-      subscriptionAuthority,
-      delegator: walletAddress,
-      delegatee: await pullerPda(),
-      nonce: 0n,
-    });
-    const [hasDelegation, isLinked] = await Promise.all([chain.exists(delegation), chain.exists(linked)]);
+    const [allowances, linkedTo] = await Promise.all([
+      chain.allowances(walletAddress, mint),
+      chain.linkedSwishId(walletAddress),
+    ]);
+    if (linkedTo && linkedTo !== swishId) {
+      throw conflict("wallet_linked_elsewhere", "This wallet is already linked to another Swish ID.");
+    }
     const instructions = [];
-    if (!hasDelegation) {
+    if (allowances.length === 0) {
       instructions.push(
-        await getCreateFixedDelegationOverlayInstructionAsync({
-          delegator: wallet,
-          payer: chain.sponsor,
-          delegatee: await pullerPda(),
-          tokenMint: mint,
-          amount: toBaseUnits(body.allowance, USDC_DECIMALS),
-          expiryTs: 0n,
-          nonce: 0n,
-          expectedSubscriptionAuthorityInitId: authority.initId,
-        }),
+        await allowanceInstruction(wallet, 0n, toBaseUnits(body.allowance, USDC_DECIMALS), authority.initId),
       );
     }
-    if (!isLinked) instructions.push(await linkWalletInstruction(wallet, chain.sponsor, publicKey));
+    if (!linkedTo) instructions.push(await linkWalletInstruction(wallet, chain.sponsor, publicKey));
     if (instructions.length === 0) {
       res.json({ done: true, swish_id: swishId, wallet: walletAddress });
       return;
@@ -147,9 +136,54 @@ export function setupRouter(deps: Deps): Router {
     return respond(res, "allow", instructions);
   });
 
+  /**
+   * A new limit for a linked wallet: the old allowance is revoked (its rent
+   * back to Swish) and a new one created at the next nonce, in one
+   * transaction the wallet signs once. Submit it like any setup step.
+   */
+  router.post("/v1/setup/wallet/limit", publishable, async (req, res) => {
+    const body = walletBody.parse(req.body);
+    const { swishId } = await passkeyFor(body.credential_id);
+    const walletAddress = address(body.wallet);
+    const wallet = createNoopSigner(walletAddress);
+    const mint = deps.usdcMint;
+
+    const [authority, allowances, linkedTo] = await Promise.all([
+      chain.subscriptionAuthority(walletAddress, mint),
+      chain.allowances(walletAddress, mint),
+      chain.linkedSwishId(walletAddress),
+    ]);
+    if (!authority || linkedTo !== swishId) {
+      throw badRequest("not_set_up", "Set this wallet up with this Swish ID first.");
+    }
+    const used = new Set(allowances.map((a) => a.nonce));
+    let nonce = 0n;
+    while (used.has(nonce)) nonce++;
+    if (nonce >= MAX_ALLOWANCE_NONCE) throw conflict("too_many_allowances", "Revoke old allowances first.");
+
+    const instructions = allowances.map((a) =>
+      getRevokeDelegationOverlayInstruction({ authority: wallet, delegationAccount: a.address, receiver: chain.sponsor.address }),
+    );
+    instructions.push(await allowanceInstruction(wallet, nonce, toBaseUnits(body.allowance, USDC_DECIMALS), authority.initId));
+    return respond(res, "limit", instructions);
+  });
+
+  async function allowanceInstruction(wallet: ReturnType<typeof createNoopSigner>, nonce: bigint, amount: bigint, initId: bigint) {
+    return getCreateFixedDelegationOverlayInstructionAsync({
+      delegator: wallet,
+      payer: chain.sponsor,
+      delegatee: await pullerPda(),
+      tokenMint: deps.usdcMint,
+      amount,
+      expiryTs: 0n,
+      nonce,
+      expectedSubscriptionAuthorityInitId: initId,
+    });
+  }
+
   async function respond(
     res: import("express").Response,
-    step: "authorize" | "allow",
+    step: "authorize" | "allow" | "limit",
     instructions: Parameters<typeof chain.buildForWallet>[0],
   ) {
     const tx = await chain.buildForWallet(instructions);

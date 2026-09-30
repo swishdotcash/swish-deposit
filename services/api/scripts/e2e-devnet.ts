@@ -128,6 +128,14 @@ async function call(path: string, body: object, as: "server" | "widget") {
   return json;
 }
 
+async function signAndSubmit(prepared: Record<string, unknown>) {
+  const unsigned = getTransactionDecoder().decode(getBase64Encoder().encode(String(prepared.transaction)));
+  const signed = await partiallySignTransaction([userWallet.keyPair], unsigned);
+  const wire = getBase64Decoder().decode(getTransactionEncoder().encode(signed));
+  const { signature } = await call("/v1/setup/wallet/submit", { transaction: wire, token: prepared.token }, "widget");
+  return String(signature);
+}
+
 // ---- Setup: passkey + wallet ----
 const passkey = fakePasskey();
 const credentialId = b64url(randomBytes(16));
@@ -138,11 +146,7 @@ step("setup 2/2: link the wallet with a 50 USDC allowance (the wallet signs; Swi
 for (;;) {
   const next = await call("/v1/setup/wallet/prepare", { credential_id: credentialId, wallet: userWallet.address, allowance: "50" }, "widget");
   if (next.done) break;
-  const unsigned = getTransactionDecoder().decode(getBase64Encoder().encode(String(next.transaction)));
-  const signed = await partiallySignTransaction([userWallet.keyPair], unsigned);
-  const wire = getBase64Decoder().decode(getTransactionEncoder().encode(signed));
-  const { signature } = await call("/v1/setup/wallet/submit", { transaction: wire, token: next.token }, "widget");
-  console.log(`   ${next.step}:`, tx(String(signature)));
+  console.log(`   ${next.step}:`, tx(await signAndSubmit(next)));
 }
 
 // ---- A deposit: one Face ID ----
@@ -155,25 +159,27 @@ async function balance(owner: Address) {
   }
 }
 
-step("the app's server creates a 12.5 deposit into the user's own account in the app");
-const deposit = await call("/v1/deposits", { amount: "12.5", token: "USDC", destination: userInApp.address, reference: "e2e-1" }, "server");
-console.log(`   deposit ${deposit.id}`);
+async function faceIdDeposit(amount: string, reference: string) {
+  const d = await call("/v1/deposits", { amount, token: "USDC", destination: userInApp.address, reference }, "server");
+  const c = await call(`/v1/deposits/${d.id}/challenge`, { client_secret: d.client_secret }, "widget");
+  const a = passkey.assert(fromB64url(String(c.challenge)));
+  const r = await call(
+    `/v1/deposits/${d.id}/submit`,
+    {
+      client_secret: d.client_secret,
+      credential_id: credentialId,
+      authenticator_data: b64url(a.authenticatorData),
+      client_data_json: b64url(a.clientDataJson),
+      signature: b64url(a.signature),
+    },
+    "widget",
+  );
+  return { deposit: d, result: r };
+}
 
-step("the widget gets the challenge; Face ID (emulated) signs it; we submit");
-const challenge = await call(`/v1/deposits/${deposit.id}/challenge`, { client_secret: deposit.client_secret }, "widget");
-const assertion = passkey.assert(fromB64url(String(challenge.challenge)));
-const result = await call(
-  `/v1/deposits/${deposit.id}/submit`,
-  {
-    client_secret: deposit.client_secret,
-    credential_id: credentialId,
-    authenticator_data: b64url(assertion.authenticatorData),
-    client_data_json: b64url(assertion.clientDataJson),
-    signature: b64url(assertion.signature),
-  },
-  "widget",
-);
-console.log(`   ${result.status}:`, tx(String(result.signature)));
+step("the app's server creates a 12.5 deposit into the user's own account in the app; Face ID (emulated) approves it");
+const { deposit, result } = await faceIdDeposit("12.5", "e2e-1");
+console.log(`   deposit ${deposit.id} ${result.status}:`, tx(String(result.signature)));
 
 step("check the chain");
 const [walletLeft, landed] = await Promise.all([balance(userWallet.address), balance(userInApp.address)]);
@@ -189,7 +195,39 @@ try {
   console.log(`   ✓ refused: ${(e as Error).message}`);
 }
 
-const ok = result.status === "succeeded" && walletLeft === units(87.5) && landed === units(12.5);
-console.log(ok ? "\n✅ end to end on devnet: one Face ID moved 12.5 into the user's own account" : "\n❌ something is off (see above)");
+step("a 40 deposit with 37.5 of allowance left must be refused");
+let refused = false;
+try {
+  await faceIdDeposit("40", "e2e-2");
+} catch (e) {
+  refused = /no_funds/.test((e as Error).message);
+  console.log(`   ${refused ? "✓" : "✗"} ${(e as Error).message}`);
+}
+
+step("raise the limit to 100: the wallet signs ONE transaction (old allowance revoked, new one created)");
+const limit = await call("/v1/setup/wallet/limit", { credential_id: credentialId, wallet: userWallet.address, allowance: "100" }, "widget");
+console.log(`   ${limit.step}:`, tx(await signAndSubmit(limit)));
+const allowances = await chain.allowances(userWallet.address, mint.address);
+console.log(`   allowances now: ${allowances.map((a) => `nonce ${a.nonce} = ${Number(a.amount) / 1e6}`).join(", ")}`);
+
+step("the same 40 deposit now goes through");
+const second = await faceIdDeposit("40", "e2e-3");
+console.log(`   ${second.result.status}:`, tx(String(second.result.signature)));
+const [walletAfter, landedAfter] = await Promise.all([balance(userWallet.address), balance(userInApp.address)]);
+const leftAfter = (await chain.allowances(userWallet.address, mint.address))[0]?.amount;
+console.log(`   user's wallet: ${Number(walletAfter) / 1e6} · in the app: ${Number(landedAfter) / 1e6} · allowance left: ${Number(leftAfter) / 1e6}`);
+
+const ok =
+  result.status === "succeeded" &&
+  walletLeft === units(87.5) &&
+  landed === units(12.5) &&
+  refused &&
+  allowances.length === 1 &&
+  allowances[0]!.amount === units(100) &&
+  second.result.status === "succeeded" &&
+  walletAfter === units(47.5) &&
+  landedAfter === units(52.5) &&
+  leftAfter === units(60);
+console.log(ok ? "\n✅ end to end on devnet: deposits, the limit refusing one, raising it, and the retry" : "\n❌ something is off (see above)");
 if (!ok) process.exitCode = 1;
 server.close();

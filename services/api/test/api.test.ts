@@ -7,7 +7,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { createApp } from "../src/app.js";
-import type { Chain, Source } from "../src/chain/client.js";
+import type { Allowance, Chain, Source } from "../src/chain/client.js";
 import { ChainError } from "../src/chain/client.js";
 import { PROGRAM_ID, SECP256R1_PROGRAM, TOKEN_PROGRAM, swishIdPda } from "../src/chain/program.js";
 import { b64url, fromB64url } from "../src/chain/webauthn.js";
@@ -32,6 +32,10 @@ class FakeChain implements Chain {
   };
   fail: Error | null = null;
   existing = new Set<string>();
+  built: Instruction[][] = [];
+  authority: { initId: bigint } | null = null;
+  walletAllowances: Allowance[] = [];
+  linkedTo: Address | null = null;
   constructor(readonly sponsor: KeyPairSigner) {}
   async clusterTag() {
     return new Uint8Array(32).fill(1);
@@ -43,7 +47,13 @@ class FakeChain implements Chain {
     return this.source;
   }
   async subscriptionAuthority() {
-    return null;
+    return this.authority;
+  }
+  async allowances() {
+    return this.walletAllowances;
+  }
+  async linkedSwishId() {
+    return this.linkedTo;
   }
   async exists(a: Address) {
     return this.existing.has(a);
@@ -56,8 +66,9 @@ class FakeChain implements Chain {
   async sendAs(): Promise<never> {
     throw new Error("not in these tests");
   }
-  async buildForWallet(): Promise<never> {
-    throw new Error("not in these tests");
+  async buildForWallet(instructions: Instruction[]) {
+    this.built.push(instructions);
+    return { wire: new Uint8Array([1, 2, 3]), messageBytes: new Uint8Array([4, 5, 6]) };
   }
   decode(): never {
     throw new Error("not in these tests");
@@ -301,6 +312,37 @@ describe("setup", () => {
     expect(again.status).toBe(201);
     const hijack = await widget("/v1/setup/passkey", { credential_id: user.credentialId, public_key: b64url(fakePasskey().spki) });
     expect(hijack.status).toBe(409);
+  });
+
+  it("will not link a wallet that belongs to another Swish ID", async () => {
+    const user = await setUpUser();
+    w.chain.existing.add((await findAssociatedTokenPda({ owner: addr(40), mint: USDC, tokenProgram: TOKEN_PROGRAM }))[0]);
+    w.chain.authority = { initId: 7n };
+    w.chain.linkedTo = addr(41);
+    const res = await widget("/v1/setup/wallet/prepare", { credential_id: user.credentialId, wallet: addr(40), allowance: "50" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("wallet_linked_elsewhere");
+  });
+
+  it("changes a limit by replacing the allowance at the next free nonce, in one transaction", async () => {
+    const user = await setUpUser();
+    const notYet = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), allowance: "100" });
+    expect(notYet.status).toBe(400);
+
+    w.chain.authority = { initId: 7n };
+    w.chain.linkedTo = await swishIdPda(user.pk.publicKey);
+    w.chain.walletAllowances = [{ address: addr(50), nonce: 0n, subscriptionAuthority: addr(51), amount: 37_500_000n, expiryTs: 0n }];
+    const res = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), allowance: "100" });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ done: false, step: "limit" });
+    const [ixs] = w.chain.built;
+    expect(ixs).toHaveLength(2);
+    // revoke the old one (rent back to Swish), then create nonce 1 for 100
+    expect(ixs![0]!.accounts!.map((a) => a.address)).toContain(addr(50));
+    expect(ixs![0]!.accounts!.map((a) => a.address)).toContain(w.chain.sponsor.address);
+    const create = Buffer.from(ixs![1]!.data!);
+    expect(create.includes(Buffer.from(new BigUint64Array([100_000_000n]).buffer))).toBe(true);
+    expect(create.includes(Buffer.from(new BigUint64Array([1n]).buffer))).toBe(true);
   });
 
   it("only signs back a transaction it prepared", async () => {

@@ -4,8 +4,10 @@
  */
 import {
   appendTransactionMessageInstructions,
+  SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR,
   compileTransaction,
-  createSolanaRpc,
+  createDefaultRpcTransport,
+  createSolanaRpcFromTransport,
   createTransactionMessage,
   getAddressDecoder,
   getBase58Encoder,
@@ -14,6 +16,7 @@ import {
   getSignatureFromTransaction,
   getTransactionDecoder,
   getTransactionEncoder,
+  isSolanaError,
   partiallySignTransaction,
   pipe,
   setTransactionMessageFeePayerSigner,
@@ -24,13 +27,14 @@ import {
   type Instruction,
   type KeyPairSigner,
   type Rpc,
+  type RpcTransport,
   type SolanaRpcApi,
   type Transaction,
   type TransactionSigner,
 } from "@solana/kit";
 import { fetchMaybeToken, findAssociatedTokenPda } from "@solana-program/token";
 import {
-  fetchMaybeFixedDelegation,
+  fetchAllMaybeFixedDelegation,
   fetchMaybeSubscriptionAuthority,
   findFixedDelegationPda,
   findSubscriptionAuthorityPda,
@@ -44,6 +48,7 @@ import {
   clusterTag,
   computeUnitLimit,
   computeUnitPrice,
+  linkedWalletPda,
   pullerPda,
 } from "./program.js";
 
@@ -54,6 +59,21 @@ export interface Source {
   subscriptionAuthority: Address;
   delegation: Address;
 }
+
+/** A fixed allowance: `amount` is what is LEFT to pull. */
+export interface Allowance {
+  address: Address;
+  nonce: bigint;
+  subscriptionAuthority: Address;
+  amount: bigint;
+  expiryTs: bigint;
+}
+
+/**
+ * Allowances live at a PDA per nonce. Changing a limit replaces the allowance
+ * with one at the next free nonce, so a wallet only ever walks a few of them.
+ */
+export const MAX_ALLOWANCE_NONCE = 32n;
 
 /** A transaction for a wallet to sign, and the bytes its signature covers. */
 export interface WalletTransaction {
@@ -68,6 +88,10 @@ export interface Chain {
   destinationFor(owner: Address, mint: Address): Promise<Address>;
   /** The first wallet of this Swish ID with enough balance and allowance. */
   findSource(swishId: Address, mint: Address, amount: bigint): Promise<Source | null>;
+  /** The wallet's allowances naming our puller for this mint (normally one). */
+  allowances(wallet: Address, mint: Address): Promise<Allowance[]>;
+  /** The Swish ID a wallet is linked to, if any. */
+  linkedSwishId(wallet: Address): Promise<Address | null>;
   /** The wallet's Foundation authority for this mint, if it has one. */
   subscriptionAuthority(wallet: Address, mint: Address): Promise<{ initId: bigint } | null>;
   /** Whether an account exists. */
@@ -97,6 +121,24 @@ export class ChainError extends Error {
   }
 }
 
+const RATE_LIMIT_RETRIES = 5;
+
+/** RPC providers answer 429 under load; wait and ask again instead of failing a deposit. */
+function retryOnRateLimit(transport: RpcTransport): RpcTransport {
+  return (async (config: Parameters<RpcTransport>[0]) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await transport(config);
+      } catch (e) {
+        const limited =
+          isSolanaError(e, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR) && e.context.statusCode === 429;
+        if (!limited || attempt >= RATE_LIMIT_RETRIES) throw e;
+        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+      }
+    }
+  }) as RpcTransport;
+}
+
 const bigintJson = (_k: string, v: unknown) => (typeof v === "bigint" ? v.toString() : v);
 const nowSeconds = () => BigInt(Math.floor(Date.now() / 1000));
 
@@ -108,7 +150,7 @@ export class SolanaChain implements Chain {
     rpcUrl: string,
     readonly sponsor: KeyPairSigner,
   ) {
-    this.rpc = createSolanaRpc(rpcUrl);
+    this.rpc = createSolanaRpcFromTransport(retryOnRateLimit(createDefaultRpcTransport({ url: rpcUrl })));
   }
 
   async clusterTag(): Promise<Uint8Array> {
@@ -140,29 +182,42 @@ export class SolanaChain implements Chain {
         ],
       })
       .send();
-    const puller = await pullerPda();
     for (const { account } of linked) {
       const data = getBase64Encoder().encode(account.data[0]);
       const wallet = getAddressDecoder().decode(data.subarray(8, 40));
       const [tokenAccount] = await findAssociatedTokenPda({ owner: wallet, mint, tokenProgram: TOKEN_PROGRAM });
-      const [subscriptionAuthority] = await findSubscriptionAuthorityPda({ user: wallet, tokenMint: mint });
-      const [delegation] = await findFixedDelegationPda({
-        subscriptionAuthority,
-        delegator: wallet,
-        delegatee: puller,
-        nonce: 0n,
-      });
-      const [token, allowance] = await Promise.all([
-        fetchMaybeToken(this.rpc, tokenAccount),
-        fetchMaybeFixedDelegation(this.rpc, delegation),
-      ]);
-      if (!token.exists || !allowance.exists) continue;
-      const expired = allowance.data.expiryTs !== 0n && allowance.data.expiryTs < nowSeconds();
-      if (!expired && token.data.amount >= amount && allowance.data.amount >= amount) {
-        return { wallet, tokenAccount, subscriptionAuthority, delegation };
+      const [token, allowances] = await Promise.all([fetchMaybeToken(this.rpc, tokenAccount), this.allowances(wallet, mint)]);
+      if (!token.exists || token.data.amount < amount) continue;
+      const usable = allowances.find(
+        (a) => a.amount >= amount && (a.expiryTs === 0n || a.expiryTs >= nowSeconds()),
+      );
+      if (usable) {
+        return { wallet, tokenAccount, subscriptionAuthority: usable.subscriptionAuthority, delegation: usable.address };
       }
     }
     return null;
+  }
+
+  async allowances(wallet: Address, mint: Address): Promise<Allowance[]> {
+    const [subscriptionAuthority] = await findSubscriptionAuthorityPda({ user: wallet, tokenMint: mint });
+    const puller = await pullerPda();
+    const nonces = Array.from({ length: Number(MAX_ALLOWANCE_NONCE) }, (_, i) => BigInt(i));
+    const addresses = await Promise.all(
+      nonces.map(async (nonce) => (await findFixedDelegationPda({ subscriptionAuthority, delegator: wallet, delegatee: puller, nonce }))[0]),
+    );
+    const accounts = await fetchAllMaybeFixedDelegation(this.rpc, addresses);
+    return accounts.flatMap((acc, i) =>
+      acc.exists && acc.data.mint === mint
+        ? [{ address: addresses[i]!, nonce: nonces[i]!, subscriptionAuthority, amount: acc.data.amount, expiryTs: acc.data.expiryTs }]
+        : [],
+    );
+  }
+
+  async linkedSwishId(wallet: Address): Promise<Address | null> {
+    const { value } = await this.rpc.getAccountInfo(await linkedWalletPda(wallet), { encoding: "base64" }).send();
+    if (!value) return null;
+    const data = getBase64Encoder().encode(value.data[0]);
+    return getAddressDecoder().decode(data.subarray(LINKED_WALLET_SWISH_ID_OFFSET, LINKED_WALLET_SWISH_ID_OFFSET + 32));
   }
 
   async subscriptionAuthority(wallet: Address, mint: Address) {
