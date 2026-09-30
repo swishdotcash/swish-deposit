@@ -1059,3 +1059,25 @@ fn a_receipt_closes_only_after_its_deadline_and_the_deposit_cannot_come_back() {
     assert_error(submit_signed(&mut env, &d, &s), SwishError::SignatureExpired);
     assert_eq!(env.balance(&in_app), units(5));
 }
+
+/// A fixed challenge, shared with the API's tests (services/api/test/chain.test.ts):
+/// the server and the program must hash exactly the same bytes.
+#[test]
+fn the_challenge_matches_the_apis() {
+    let program_id = swish_deposit::ID;
+    let mint = Pubkey::new_from_array([3u8; 32]);
+    let destination = Pubkey::new_from_array([4u8; 32]);
+    let hash = PullChallenge {
+        cluster_tag: &[1u8; 32],
+        program_id: &program_id,
+        deposit_id: &[5u8; 16],
+        app_id: &[6u8; 16],
+        mint: &mint,
+        destination: &destination,
+        amount: 12_500_000,
+        expires_at: 1_790_000_090,
+    }
+    .hash();
+    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hex, "76f08a1b0bb339ed8201b153cd2572be73d9fc518e8024b8a180e53961b4420f", "update the API test too if this changes");
+}
