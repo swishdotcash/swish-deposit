@@ -324,24 +324,26 @@ describe("setup", () => {
     expect(res.body.error.code).toBe("wallet_linked_elsewhere");
   });
 
-  it("changes a limit by replacing the allowance at the next free nonce, in one transaction", async () => {
+  it("adds to a limit: what is left plus the new amount, replacing the allowance at the next free nonce", async () => {
     const user = await setUpUser();
-    const notYet = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), allowance: "100" });
+    const notYet = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), add: "100" });
     expect(notYet.status).toBe(400);
 
     w.chain.authority = { initId: 7n };
     w.chain.linkedTo = await swishIdPda(user.pk.publicKey);
     w.chain.walletAllowances = [{ address: addr(50), nonce: 0n, subscriptionAuthority: addr(51), amount: 37_500_000n, expiryTs: 0n }];
-    const res = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), allowance: "100" });
+    const left = await widget("/v1/setup/wallet/allowance", { credential_id: user.credentialId, wallet: addr(40) });
+    expect(left.body).toMatchObject({ left: "37.5", token: "USDC" });
+    const res = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), add: "100" });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ done: false, step: "limit" });
+    expect(res.body).toMatchObject({ done: false, step: "limit", left_now: "37.5", new_limit: "137.5" });
     const [ixs] = w.chain.built;
     expect(ixs).toHaveLength(2);
     // revoke the old one (rent back to Swish), then create nonce 1 for 100
     expect(ixs![0]!.accounts!.map((a) => a.address)).toContain(addr(50));
     expect(ixs![0]!.accounts!.map((a) => a.address)).toContain(w.chain.sponsor.address);
     const create = Buffer.from(ixs![1]!.data!);
-    expect(create.includes(Buffer.from(new BigUint64Array([100_000_000n]).buffer))).toBe(true);
+    expect(create.includes(Buffer.from(new BigUint64Array([137_500_000n]).buffer))).toBe(true);
     expect(create.includes(Buffer.from(new BigUint64Array([1n]).buffer))).toBe(true);
   });
 

@@ -20,9 +20,9 @@ import {
 import { Router } from "express";
 import { z } from "zod";
 
-import { toBaseUnits } from "../amount.js";
+import { fromBaseUnits, toBaseUnits } from "../amount.js";
 import { requirePublishableKey } from "../auth.js";
-import { MAX_ALLOWANCE_NONCE } from "../chain/client.js";
+import { MAX_ALLOWANCE_NONCE, type Allowance } from "../chain/client.js";
 import { linkWalletInstruction, pullerPda, swishIdPda, TOKEN_PROGRAM } from "../chain/program.js";
 import { PasskeyError, compressPublicKey, fromB64url } from "../chain/webauthn.js";
 import { USDC_DECIMALS, type Deps } from "../context.js";
@@ -35,17 +35,27 @@ const passkeyBody = z.object({
   public_key: z.string().min(1),
 });
 
-const walletBody = z.object({
+const positiveAmount = z.string().refine((a) => {
+  try {
+    return toBaseUnits(a, USDC_DECIMALS) > 0n;
+  } catch {
+    return false;
+  }
+}, 'a positive amount with at most 6 decimals, e.g. "500"');
+
+const walletRef = z.object({
   credential_id: z.string().min(1),
   wallet: z.string().refine(isAddress, "not a Solana address"),
+});
+
+const walletBody = walletRef.extend({
   /** The most Swish may ever pull from this wallet, e.g. "500". */
-  allowance: z.string().refine((a) => {
-    try {
-      return toBaseUnits(a, USDC_DECIMALS) > 0n;
-    } catch {
-      return false;
-    }
-  }, 'a positive amount with at most 6 decimals, e.g. "500"'),
+  allowance: positiveAmount,
+});
+
+const limitBody = walletRef.extend({
+  /** Added on top of what is left, e.g. "100". */
+  add: positiveAmount,
 });
 
 const submitBody = z.object({
@@ -136,13 +146,22 @@ export function setupRouter(deps: Deps): Router {
     return respond(res, "allow", instructions);
   });
 
+  /** How much Swish can still pull from this wallet (for "Left now"). */
+  router.post("/v1/setup/wallet/allowance", publishable, async (req, res) => {
+    const body = walletRef.parse(req.body);
+    const walletAddress = address(body.wallet);
+    const allowances = await chain.allowances(walletAddress, deps.usdcMint);
+    res.json({ wallet: walletAddress, left: fromBaseUnits(leftOf(allowances), USDC_DECIMALS), token: "USDC" });
+  });
+
   /**
-   * A new limit for a linked wallet: the old allowance is revoked (its rent
-   * back to Swish) and a new one created at the next nonce, in one
-   * transaction the wallet signs once. Submit it like any setup step.
+   * Adds to a linked wallet's limit: the new limit is what is left plus
+   * `add`. The old allowance is revoked (its rent back to Swish) and one for
+   * the new total created at the next nonce, in one transaction the wallet
+   * signs once. Submit it like any setup step.
    */
   router.post("/v1/setup/wallet/limit", publishable, async (req, res) => {
-    const body = walletBody.parse(req.body);
+    const body = limitBody.parse(req.body);
     const { swishId } = await passkeyFor(body.credential_id);
     const walletAddress = address(body.wallet);
     const wallet = createNoopSigner(walletAddress);
@@ -161,12 +180,25 @@ export function setupRouter(deps: Deps): Router {
     while (used.has(nonce)) nonce++;
     if (nonce >= MAX_ALLOWANCE_NONCE) throw conflict("too_many_allowances", "Revoke old allowances first.");
 
+    const left = leftOf(allowances);
+    const newLimit = left + toBaseUnits(body.add, USDC_DECIMALS);
     const instructions = allowances.map((a) =>
       getRevokeDelegationOverlayInstruction({ authority: wallet, delegationAccount: a.address, receiver: chain.sponsor.address }),
     );
-    instructions.push(await allowanceInstruction(wallet, nonce, toBaseUnits(body.allowance, USDC_DECIMALS), authority.initId));
-    return respond(res, "limit", instructions);
+    instructions.push(await allowanceInstruction(wallet, nonce, newLimit, authority.initId));
+    return respond(res, "limit", instructions, {
+      left_now: fromBaseUnits(left, USDC_DECIMALS),
+      new_limit: fromBaseUnits(newLimit, USDC_DECIMALS),
+    });
   });
+
+  /** What is left across a wallet's current allowances (normally just one). */
+  const leftOf = (allowances: Allowance[]) => {
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    return allowances
+      .filter((a) => a.expiryTs === 0n || a.expiryTs >= now)
+      .reduce((sum, a) => sum + a.amount, 0n);
+  };
 
   async function allowanceInstruction(wallet: ReturnType<typeof createNoopSigner>, nonce: bigint, amount: bigint, initId: bigint) {
     return getCreateFixedDelegationOverlayInstructionAsync({
@@ -185,11 +217,13 @@ export function setupRouter(deps: Deps): Router {
     res: import("express").Response,
     step: "authorize" | "allow" | "limit",
     instructions: Parameters<typeof chain.buildForWallet>[0],
+    extra: Record<string, string> = {},
   ) {
     const tx = await chain.buildForWallet(instructions);
     res.json({
       done: false,
       step,
+      ...extra,
       transaction: getBase64Decoder().decode(tx.wire),
       token: seal(tx.messageBytes),
     });

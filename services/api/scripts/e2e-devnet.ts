@@ -204,13 +204,15 @@ try {
   console.log(`   ${refused ? "✓" : "✗"} ${(e as Error).message}`);
 }
 
-step("raise the limit to 100: the wallet signs ONE transaction (old allowance revoked, new one created)");
-const limit = await call("/v1/setup/wallet/limit", { credential_id: credentialId, wallet: userWallet.address, allowance: "100" }, "widget");
+step("add 100 to the limit: the wallet signs ONE transaction (old allowance revoked, new total created)");
+const leftNow = await call("/v1/setup/wallet/allowance", { credential_id: credentialId, wallet: userWallet.address }, "widget");
+const limit = await call("/v1/setup/wallet/limit", { credential_id: credentialId, wallet: userWallet.address, add: "100" }, "widget");
+console.log(`   left now ${leftNow.left} · shown before signing: ${limit.left_now} + 100 = ${limit.new_limit}`);
 console.log(`   ${limit.step}:`, tx(await signAndSubmit(limit)));
 const allowances = await chain.allowances(userWallet.address, mint.address);
 console.log(`   allowances now: ${allowances.map((a) => `nonce ${a.nonce} = ${Number(a.amount) / 1e6}`).join(", ")}`);
 
-step("the same 40 deposit now goes through");
+step("the same 40 deposit now goes through (137.5 − 40 = 97.5 left)");
 const second = await faceIdDeposit("40", "e2e-3");
 console.log(`   ${second.result.status}:`, tx(String(second.result.signature)));
 const [walletAfter, landedAfter] = await Promise.all([balance(userWallet.address), balance(userInApp.address)]);
@@ -223,11 +225,13 @@ const ok =
   landed === units(12.5) &&
   refused &&
   allowances.length === 1 &&
-  allowances[0]!.amount === units(100) &&
+  leftNow.left === "37.5" &&
+  limit.new_limit === "137.5" &&
+  allowances[0]!.amount === units(137.5) &&
   second.result.status === "succeeded" &&
   walletAfter === units(47.5) &&
   landedAfter === units(52.5) &&
-  leftAfter === units(60);
+  leftAfter === units(97.5);
 console.log(ok ? "\n✅ end to end on devnet: deposits, the limit refusing one, raising it, and the retry" : "\n❌ something is off (see above)");
 if (!ok) process.exitCode = 1;
 server.close();
