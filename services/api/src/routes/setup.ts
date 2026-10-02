@@ -2,6 +2,12 @@
  * One-time setup, from the widget: register the user's passkey (their Swish
  * ID), then link each wallet with a USDC allowance.
  *
+ * Swish pays the rent and fees, so linking a wallet or changing its limit
+ * only happens for an open deposit your server created (secret key) that the
+ * widget holds: one wallet per deposit, holding at least its amount, a few
+ * paid transactions, and a daily cap on new wallets per app. The publishable
+ * key alone can only register a passkey (a database row) and read a limit.
+ *
  * A wallet signs what we build; we check it came back unchanged, then add
  * the sponsor's signature (Swish pays every fee and rent). A first-time
  * wallet signs twice: the Foundation authority first (its id is the slot it
@@ -10,7 +16,7 @@
  */
 import { createHmac } from "node:crypto";
 
-import { address, createNoopSigner, getBase64Decoder, getBase64Encoder, isAddress } from "@solana/kit";
+import { address, createNoopSigner, type Address, getBase64Decoder, getBase64Encoder, isAddress } from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
 import {
   getCreateFixedDelegationOverlayInstructionAsync,
@@ -21,13 +27,21 @@ import { Router } from "express";
 import { z } from "zod";
 
 import { fromBaseUnits, toBaseUnits } from "../amount.js";
-import { requirePublishableKey } from "../auth.js";
+import { currentApp, requirePublishableKey } from "../auth.js";
 import { MAX_ALLOWANCE_NONCE, type Allowance } from "../chain/client.js";
 import { linkWalletInstruction, pullerPda, swishIdPda, TOKEN_PROGRAM } from "../chain/program.js";
 import { PasskeyError, compressPublicKey, fromB64url } from "../chain/webauthn.js";
-import { USDC_DECIMALS, type Deps } from "../context.js";
+import {
+  SETUP_CALLS_PER_IP_PER_MINUTE,
+  SETUP_TRANSACTIONS_PER_DEPOSIT,
+  USDC_DECIMALS,
+  type AppRow,
+  type Deps,
+} from "../context.js";
 import { HttpError, badRequest, conflict } from "../http.js";
 import { safeEqual } from "../keys.js";
+import { perIpLimit } from "../rateLimit.js";
+import { loadDepositForWidget, type DepositRow } from "./deposits.js";
 
 const passkeyBody = z.object({
   credential_id: z.string().min(1).max(1024),
@@ -48,12 +62,20 @@ const walletRef = z.object({
   wallet: z.string().refine(isAddress, "not a Solana address"),
 });
 
+/** The open deposit this setup is for, as the widget holds it. */
+const forDeposit = {
+  deposit_id: z.string().min(1),
+  client_secret: z.string().min(1),
+};
+
 const walletBody = walletRef.extend({
+  ...forDeposit,
   /** The most Swish may ever pull from this wallet, e.g. "500". */
   allowance: positiveAmount,
 });
 
 const limitBody = walletRef.extend({
+  ...forDeposit,
   /** Added on top of what is left, e.g. "100". */
   add: positiveAmount,
 });
@@ -68,8 +90,62 @@ export function setupRouter(deps: Deps): Router {
   const router = Router();
   const { db, chain } = deps;
   const publishable = requirePublishableKey(deps);
-  const seal = (messageBytes: Uint8Array) =>
-    createHmac("sha256", deps.serverSecret).update(messageBytes).digest("base64url");
+  router.use("/v1/setup", perIpLimit(SETUP_CALLS_PER_IP_PER_MINUTE));
+
+  /** Ties a prepared transaction to its deposit: `<deposit id>.<mac>`. */
+  const seal = (depositId: string, messageBytes: Uint8Array) =>
+    `${depositId}.${createHmac("sha256", deps.serverSecret).update(depositId).update(messageBytes).digest("base64url")}`;
+
+  async function openDeposit(body: { deposit_id: string; client_secret: string }, app: AppRow) {
+    const d = await loadDepositForWidget(db, body.deposit_id, body.client_secret, app);
+    if (d.status !== "created") throw conflict("not_open", `this deposit is ${d.status}`);
+    return d;
+  }
+
+  /** The wallet must hold what this deposit asks, before Swish spends on it. */
+  async function requireFunds(wallet: Address, d: DepositRow) {
+    const balance = await chain.tokenBalance(wallet, deps.usdcMint);
+    if (balance === null) {
+      throw badRequest("no_usdc_account", "This wallet has no USDC account yet. Add USDC to it first.");
+    }
+    if (balance < BigInt(d.amount)) {
+      throw new HttpError(
+        402,
+        "not_enough_usdc",
+        `This wallet holds less than the ${fromBaseUnits(d.amount, USDC_DECIMALS)} USDC this deposit needs.`,
+      );
+    }
+  }
+
+  /**
+   * One wallet per deposit. A wallet Swish has not linked yet counts against
+   * the app's daily cap on new wallets, once.
+   */
+  async function bindWallet(d: DepositRow, app: AppRow, wallet: Address, isNew: boolean) {
+    const { rows } = await db.query<DepositRow>(
+      `update deposits set
+         setup_wallet = $2,
+         setup_at = coalesce(setup_at, now()),
+         setup_new_wallet = setup_new_wallet or $3::boolean,
+         updated_at = now()
+       where id = $1 and status = 'created'
+         and (setup_wallet is null or setup_wallet = $2)
+         and (not $3::boolean or setup_new_wallet or (
+           select count(*) from deposits
+           where app_id = $4 and setup_new_wallet and setup_at > now() - interval '1 day'
+         ) < $5)
+       returning *`,
+      [d.id, wallet, isNew, app.id, app.daily_new_wallets],
+    );
+    if (rows[0]) return;
+    const { rows: current } = await db.query<DepositRow>("select * from deposits where id = $1", [d.id]);
+    const c = current[0]!;
+    if (c.status !== "created") throw conflict("not_open", `this deposit is ${c.status}`);
+    if (c.setup_wallet && c.setup_wallet !== wallet) {
+      throw conflict("deposit_has_wallet", "This deposit is already setting up another wallet.");
+    }
+    throw new HttpError(429, "daily_new_wallet_limit", "Too many new wallets for this app today. Try again tomorrow.");
+  }
 
   async function passkeyFor(credentialId: string) {
     const { rows } = await db.query<{ public_key: Uint8Array; swish_id: string }>(
@@ -103,18 +179,25 @@ export function setupRouter(deps: Deps): Router {
 
   router.post("/v1/setup/wallet/prepare", publishable, async (req, res) => {
     const body = walletBody.parse(req.body);
+    const app = currentApp(res);
+    const deposit = await openDeposit(body, app);
     const { publicKey, swishId } = await passkeyFor(body.credential_id);
     const walletAddress = address(body.wallet);
     const wallet = createNoopSigner(walletAddress);
     const mint = deps.usdcMint;
 
-    const [userAta] = await findAssociatedTokenPda({ owner: walletAddress, mint, tokenProgram: TOKEN_PROGRAM });
-    if (!(await chain.exists(userAta))) {
-      throw badRequest("no_usdc_account", "This wallet has no USDC account yet. Add USDC to it first.");
+    await requireFunds(walletAddress, deposit);
+    const [authority, linkedTo] = await Promise.all([
+      chain.subscriptionAuthority(walletAddress, mint),
+      chain.linkedSwishId(walletAddress),
+    ]);
+    if (linkedTo && linkedTo !== swishId) {
+      throw conflict("wallet_linked_elsewhere", "This wallet is already linked to another Swish ID.");
     }
+    await bindWallet(deposit, app, walletAddress, !linkedTo);
 
-    const authority = await chain.subscriptionAuthority(walletAddress, mint);
     if (!authority) {
+      const [userAta] = await findAssociatedTokenPda({ owner: walletAddress, mint, tokenProgram: TOKEN_PROGRAM });
       const ix = await getInitSubscriptionAuthorityOverlayInstructionAsync({
         owner: wallet,
         payer: chain.sponsor,
@@ -122,16 +205,10 @@ export function setupRouter(deps: Deps): Router {
         tokenProgram: TOKEN_PROGRAM,
         userAta,
       });
-      return respond(res, "authorize", [ix]);
+      return respond(res, deposit.id, "authorize", [ix]);
     }
 
-    const [allowances, linkedTo] = await Promise.all([
-      chain.allowances(walletAddress, mint),
-      chain.linkedSwishId(walletAddress),
-    ]);
-    if (linkedTo && linkedTo !== swishId) {
-      throw conflict("wallet_linked_elsewhere", "This wallet is already linked to another Swish ID.");
-    }
+    const allowances = await chain.allowances(walletAddress, mint);
     const instructions = [];
     if (allowances.length === 0) {
       instructions.push(
@@ -143,7 +220,7 @@ export function setupRouter(deps: Deps): Router {
       res.json({ done: true, swish_id: swishId, wallet: walletAddress });
       return;
     }
-    return respond(res, "allow", instructions);
+    return respond(res, deposit.id, "allow", instructions);
   });
 
   /** How much Swish can still pull from this wallet (for "Left now"). */
@@ -162,6 +239,8 @@ export function setupRouter(deps: Deps): Router {
    */
   router.post("/v1/setup/wallet/limit", publishable, async (req, res) => {
     const body = limitBody.parse(req.body);
+    const app = currentApp(res);
+    const deposit = await openDeposit(body, app);
     const { swishId } = await passkeyFor(body.credential_id);
     const walletAddress = address(body.wallet);
     const wallet = createNoopSigner(walletAddress);
@@ -175,6 +254,8 @@ export function setupRouter(deps: Deps): Router {
     if (!authority || linkedTo !== swishId) {
       throw badRequest("not_set_up", "Set this wallet up with this Swish ID first.");
     }
+    await requireFunds(walletAddress, deposit);
+    await bindWallet(deposit, app, walletAddress, false);
     const used = new Set(allowances.map((a) => a.nonce));
     let nonce = 0n;
     while (used.has(nonce)) nonce++;
@@ -186,7 +267,7 @@ export function setupRouter(deps: Deps): Router {
       getRevokeDelegationOverlayInstruction({ authority: wallet, delegationAccount: a.address, receiver: chain.sponsor.address }),
     );
     instructions.push(await allowanceInstruction(wallet, nonce, newLimit, authority.initId));
-    return respond(res, "limit", instructions, {
+    return respond(res, deposit.id, "limit", instructions, {
       left_now: fromBaseUnits(left, USDC_DECIMALS),
       new_limit: fromBaseUnits(newLimit, USDC_DECIMALS),
     });
@@ -215,6 +296,7 @@ export function setupRouter(deps: Deps): Router {
 
   async function respond(
     res: import("express").Response,
+    depositId: string,
     step: "authorize" | "allow" | "limit",
     instructions: Parameters<typeof chain.buildForWallet>[0],
     extra: Record<string, string> = {},
@@ -225,7 +307,7 @@ export function setupRouter(deps: Deps): Router {
       step,
       ...extra,
       transaction: getBase64Decoder().decode(tx.wire),
-      token: seal(tx.messageBytes),
+      token: seal(depositId, tx.messageBytes),
     });
   }
 
@@ -238,13 +320,23 @@ export function setupRouter(deps: Deps): Router {
       throw badRequest("invalid_transaction", "not a transaction");
     }
     // Only a transaction we built, unchanged, gets the sponsor's signature.
-    if (!safeEqual(seal(new Uint8Array(tx.messageBytes)), body.token)) {
+    const depositId = body.token.split(".")[0]!;
+    if (!safeEqual(seal(depositId, new Uint8Array(tx.messageBytes)), body.token)) {
       throw badRequest("invalid_transaction", "this is not the transaction we prepared");
     }
     const missing = Object.entries(tx.signatures).filter(
       ([signer, sig]) => signer !== chain.sponsor.address && sig === null,
     );
     if (missing.length) throw badRequest("unsigned", "the wallet has not signed this transaction");
+    // Swish pays a fee per transaction: a few per deposit, while it is open.
+    const { rows: counted } = await db.query(
+      `update deposits set setup_txs = setup_txs + 1, updated_at = now()
+       where id = $1 and status = 'created' and setup_txs < $2 returning id`,
+      [depositId, SETUP_TRANSACTIONS_PER_DEPOSIT],
+    );
+    if (!counted[0]) {
+      throw new HttpError(429, "setup_limit", "Too many setup transactions for this deposit. Start a new deposit.");
+    }
     const signature = await chain.sendWalletSigned(tx);
     res.json({ signature });
   });

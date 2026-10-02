@@ -94,6 +94,8 @@ export interface Chain {
   linkedSwishId(wallet: Address): Promise<Address | null>;
   /** The wallet's Foundation authority for this mint, if it has one. */
   subscriptionAuthority(wallet: Address, mint: Address): Promise<{ initId: bigint } | null>;
+  /** The wallet's token balance in base units; null when it has no token account. */
+  tokenBalance(wallet: Address, mint: Address): Promise<bigint | null>;
   /** Whether an account exists. */
   exists(account: Address): Promise<boolean>;
   /** Signs as sponsor, sends, and waits for confirmation. Returns the signature. */
@@ -224,6 +226,12 @@ export class SolanaChain implements Chain {
     const [pda] = await findSubscriptionAuthorityPda({ user: wallet, tokenMint: mint });
     const acc = await fetchMaybeSubscriptionAuthority(this.rpc, pda);
     return acc.exists ? { initId: acc.data.initId } : null;
+  }
+
+  async tokenBalance(wallet: Address, mint: Address): Promise<bigint | null> {
+    const [ata] = await findAssociatedTokenPda({ owner: wallet, mint, tokenProgram: TOKEN_PROGRAM });
+    const token = await fetchMaybeToken(this.rpc, ata);
+    return token.exists ? token.data.amount : null;
   }
 
   async exists(account: Address): Promise<boolean> {

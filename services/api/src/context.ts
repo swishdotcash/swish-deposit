@@ -24,8 +24,14 @@ export interface AppRow {
   secret_key_hash: string;
   webhook_url: string | null;
   active: boolean;
+  /** New wallets Swish pays to set up, per day. A safety net. */
+  daily_new_wallets: number;
 }
 
 export const USDC_DECIMALS = 6;
 /** How long a Face ID approval stays valid (the program allows up to 120 s). */
 export const SIGNATURE_LIFETIME_SECONDS = 90;
+/** Setup calls one IP may make a minute. A first-time setup is 6 to 8. */
+export const SETUP_CALLS_PER_IP_PER_MINUTE = 20;
+/** Setup transactions Swish pays fees for, per deposit (a new wallet needs 2). */
+export const SETUP_TRANSACTIONS_PER_DEPOSIT = 5;

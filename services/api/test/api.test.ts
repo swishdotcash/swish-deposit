@@ -4,7 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { generateKeyPairSigner, getAddressDecoder, type Address, type Instruction, type KeyPairSigner } from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
 import request from "supertest";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createApp } from "../src/app.js";
 import type { Allowance, Chain, Source } from "../src/chain/client.js";
@@ -36,6 +36,7 @@ class FakeChain implements Chain {
   authority: { initId: bigint } | null = null;
   walletAllowances: Allowance[] = [];
   linkedTo: Address | null = null;
+  balance: bigint | null = 1_000_000_000n;
   constructor(readonly sponsor: KeyPairSigner) {}
   async clusterTag() {
     return new Uint8Array(32).fill(1);
@@ -55,6 +56,9 @@ class FakeChain implements Chain {
   async linkedSwishId() {
     return this.linkedTo;
   }
+  async tokenBalance() {
+    return this.balance;
+  }
   async exists(a: Address) {
     return this.existing.has(a);
   }
@@ -70,15 +74,19 @@ class FakeChain implements Chain {
     this.built.push(instructions);
     return { wire: new Uint8Array([1, 2, 3]), messageBytes: new Uint8Array([4, 5, 6]) };
   }
-  decode(): never {
-    throw new Error("not in these tests");
+  decode() {
+    // What a wallet hands back: our message, signed by it.
+    return { messageBytes: new Uint8Array([4, 5, 6]), signatures: { [addr(40)]: new Uint8Array(64) } } as never;
   }
-  async sendWalletSigned(): Promise<never> {
-    throw new Error("not in these tests");
+  walletSigned = 0;
+  async sendWalletSigned() {
+    this.walletSigned++;
+    return "5etup";
   }
 }
 
 interface World {
+  pg: PGlite;
   deps: Deps;
   chain: FakeChain;
   webhooks: { url: string; body: string; signature: string }[];
@@ -110,12 +118,15 @@ async function world(): Promise<World> {
       return new Response(null, { status: 200 });
     }) as typeof fetch,
   };
-  return { deps, chain, webhooks, keys: { publishable, secret, secretHash: hashKey(secret) }, api: createApp(deps) };
+  return { pg, deps, chain, webhooks, keys: { publishable, secret, secretHash: hashKey(secret) }, api: createApp(deps) };
 }
 
 let w: World;
 beforeEach(async () => {
   w = await world();
+});
+afterEach(async () => {
+  await w.pg.close();
 });
 
 const server = () => ({
@@ -306,6 +317,11 @@ describe("one Face ID moves the money", () => {
 });
 
 describe("setup", () => {
+  /** The widget sets up for the deposit it holds. */
+  const forDeposit = (d: { id: string; client_secret: string }) => ({ deposit_id: d.id, client_secret: d.client_secret });
+  const prepare = (user: { credentialId: string }, d: { id: string; client_secret: string }, wallet = addr(40)) =>
+    widget("/v1/setup/wallet/prepare", { credential_id: user.credentialId, wallet, allowance: "50", ...forDeposit(d) });
+
   it("registers a passkey once; the same id cannot be re-pointed at another key", async () => {
     const user = await setUpUser();
     const again = await widget("/v1/setup/passkey", { credential_id: user.credentialId, public_key: b64url(user.pk.spki) });
@@ -316,17 +332,75 @@ describe("setup", () => {
 
   it("will not link a wallet that belongs to another Swish ID", async () => {
     const user = await setUpUser();
-    w.chain.existing.add((await findAssociatedTokenPda({ owner: addr(40), mint: USDC, tokenProgram: TOKEN_PROGRAM }))[0]);
     w.chain.authority = { initId: 7n };
     w.chain.linkedTo = addr(41);
-    const res = await widget("/v1/setup/wallet/prepare", { credential_id: user.credentialId, wallet: addr(40), allowance: "50" });
+    const res = await prepare(user, await createDeposit());
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("wallet_linked_elsewhere");
   });
 
+  it("needs an open deposit from your server: the publishable key alone cannot make Swish pay", async () => {
+    const user = await setUpUser();
+    const bare = await widget("/v1/setup/wallet/prepare", { credential_id: user.credentialId, wallet: addr(40), allowance: "50" });
+    expect(bare.status).toBe(400);
+    const d = await createDeposit();
+    const guessed = await prepare(user, { id: d.id, client_secret: "swishcs_guess" });
+    expect(guessed.status).toBe(404);
+    const made = await widget("/v1/setup/wallet/prepare", { credential_id: user.credentialId, wallet: addr(40), allowance: "50", deposit_id: randomUUID(), client_secret: "x" });
+    expect(made.status).toBe(404);
+    await w.deps.db.query("update deposits set status = 'succeeded' where id = $1", [d.id]);
+    const done = await prepare(user, d);
+    expect(done.status).toBe(409);
+    expect(w.chain.built).toHaveLength(0);
+  });
+
+  it("needs the wallet to hold the deposit's amount before building anything", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit("12.5");
+    w.chain.balance = null;
+    expect((await prepare(user, d)).body.error.code).toBe("no_usdc_account");
+    w.chain.balance = 12_499_999n;
+    const short = await prepare(user, d);
+    expect(short.status).toBe(402);
+    expect(short.body.error.code).toBe("not_enough_usdc");
+    w.chain.balance = 12_500_000n;
+    const ok = await prepare(user, d);
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ done: false, step: "authorize" });
+    expect(ok.body.token.startsWith(`${d.id}.`)).toBe(true);
+  });
+
+  it("sets up one wallet per deposit", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    expect((await prepare(user, d, addr(40))).status).toBe(200);
+    expect((await prepare(user, d, addr(40))).status).toBe(200);
+    const other = await prepare(user, d, addr(42));
+    expect(other.status).toBe(409);
+    expect(other.body.error.code).toBe("deposit_has_wallet");
+  });
+
+  it("caps the new wallets Swish pays for, per app per day; wallets already linked do not count", async () => {
+    await w.deps.db.query("update apps set daily_new_wallets = 1");
+    const user = await setUpUser();
+    const first = await createDeposit();
+    expect((await prepare(user, first, addr(40))).status).toBe(200);
+    // the same deposit carrying on with its wallet is not a new one
+    expect((await prepare(user, first, addr(40))).status).toBe(200);
+    const capped = await prepare(user, await createDeposit(), addr(42));
+    expect(capped.status).toBe(429);
+    expect(capped.body.error.code).toBe("daily_new_wallet_limit");
+    w.chain.authority = { initId: 7n };
+    w.chain.linkedTo = await swishIdPda(user.pk.publicKey);
+    expect((await prepare(user, await createDeposit(), addr(43))).status).toBe(200);
+  });
+
   it("adds to a limit: what is left plus the new amount, replacing the allowance at the next free nonce", async () => {
     const user = await setUpUser();
-    const notYet = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), add: "100" });
+    const d = await createDeposit();
+    const limit = () =>
+      widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), add: "100", ...forDeposit(d) });
+    const notYet = await limit();
     expect(notYet.status).toBe(400);
 
     w.chain.authority = { initId: 7n };
@@ -334,7 +408,9 @@ describe("setup", () => {
     w.chain.walletAllowances = [{ address: addr(50), nonce: 0n, subscriptionAuthority: addr(51), amount: 37_500_000n, expiryTs: 0n }];
     const left = await widget("/v1/setup/wallet/allowance", { credential_id: user.credentialId, wallet: addr(40) });
     expect(left.body).toMatchObject({ left: "37.5", token: "USDC" });
-    const res = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), add: "100" });
+    const noDeposit = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), add: "100" });
+    expect(noDeposit.status).toBe(400);
+    const res = await limit();
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ done: false, step: "limit", left_now: "37.5", new_limit: "137.5" });
     const [ixs] = w.chain.built;
@@ -350,5 +426,37 @@ describe("setup", () => {
   it("only signs back a transaction it prepared", async () => {
     const res = await widget("/v1/setup/wallet/submit", { transaction: "AAAA", token: "x" });
     expect(res.status).toBe(400);
+    const d = await createDeposit();
+    const forged = await widget("/v1/setup/wallet/submit", { transaction: "AAAA", token: `${d.id}.forged` });
+    expect(forged.status).toBe(400);
+    expect(w.chain.walletSigned).toBe(0);
+  });
+
+  it("pays for a few setup transactions per deposit, only while it is open", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    const { token } = (await prepare(user, d)).body;
+    const submit = () => widget("/v1/setup/wallet/submit", { transaction: "AAAA", token });
+    for (let i = 0; i < 5; i++) expect((await submit()).status).toBe(200);
+    const sixth = await submit();
+    expect(sixth.status).toBe(429);
+    expect(sixth.body.error.code).toBe("setup_limit");
+    expect(w.chain.walletSigned).toBe(5);
+
+    const d2 = await createDeposit();
+    const t2 = (await prepare(user, d2)).body.token;
+    await w.deps.db.query("update deposits set status = 'succeeded' where id = $1", [d2.id]);
+    expect((await widget("/v1/setup/wallet/submit", { transaction: "AAAA", token: t2 })).status).toBe(429);
+    expect(w.chain.walletSigned).toBe(5);
+  });
+
+  it("limits setup calls per IP", async () => {
+    let last;
+    for (let i = 0; i < 21; i++) last = await widget("/v1/setup/wallet/allowance", { credential_id: "c", wallet: addr(40) });
+    expect(last!.status).toBe(429);
+    expect(last!.body.error.code).toBe("rate_limited");
+    expect(last!.headers["retry-after"]).toBeDefined();
+    // deposits themselves are not held back by it
+    expect((await server().get(`/v1/deposits/${(await createDeposit()).id}`)).status).toBe(200);
   });
 });

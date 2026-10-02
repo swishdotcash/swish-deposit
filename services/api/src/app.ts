@@ -9,6 +9,8 @@ import { setupRouter } from "./routes/setup.js";
 export function createApp(deps: Deps): express.Express {
   const app = express();
   app.disable("x-powered-by");
+  // Railway's proxy is the one hop in front: req.ip is the caller.
+  app.set("trust proxy", 1);
   app.use(express.json({ limit: "64kb" }));
   app.use(corsPreflight);
   app.get("/health", (_req, res) => {

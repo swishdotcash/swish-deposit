@@ -11,6 +11,7 @@ import { ChainError } from "../chain/client.js";
 import { pullChallenge, pullInstruction, receiptPda, swishIdPda, uuidBytes } from "../chain/program.js";
 import { PasskeyError, b64url, fromB64url, secp256r1Instruction, verifyAssertion } from "../chain/webauthn.js";
 import { SIGNATURE_LIFETIME_SECONDS, USDC_DECIMALS, type AppRow, type Deps } from "../context.js";
+import type { Db } from "../db.js";
 import { HttpError, badRequest, notFound } from "../http.js";
 import { hashKey, newClientSecret, safeEqual } from "../keys.js";
 import { sendWebhook } from "../webhooks.js";
@@ -30,6 +31,9 @@ export interface DepositRow {
   wallet: string | null;
   signature: string | null;
   error: string | null;
+  setup_wallet: string | null;
+  setup_new_wallet: boolean;
+  setup_txs: number;
   created_at: Date;
 }
 
@@ -74,25 +78,29 @@ const submitBody = widgetBody.extend({
   signature: z.string().min(1),
 });
 
+async function loadDeposit(db: Db, id: string, app: AppRow): Promise<DepositRow> {
+  if (!uuid.safeParse(id).success) throw notFound("deposit");
+  const { rows } = await db.query<DepositRow>("select * from deposits where id = $1 and app_id = $2", [id, app.id]);
+  if (!rows[0]) throw notFound("deposit");
+  return rows[0];
+}
+
+/** The widget proves it holds this deposit's client secret. */
+export async function loadDepositForWidget(db: Db, id: string, clientSecret: string, app: AppRow): Promise<DepositRow> {
+  const d = await loadDeposit(db, id, app);
+  if (!safeEqual(d.client_secret_hash, hashKey(clientSecret))) throw notFound("deposit");
+  return d;
+}
+
 export function depositsRouter(deps: Deps): Router {
   const router = Router();
   const { db, chain } = deps;
   const secret = requireSecretKey(deps);
   const publishable = requirePublishableKey(deps);
 
-  async function load(id: string, app: AppRow): Promise<DepositRow> {
-    if (!uuid.safeParse(id).success) throw notFound("deposit");
-    const { rows } = await db.query<DepositRow>("select * from deposits where id = $1 and app_id = $2", [id, app.id]);
-    if (!rows[0]) throw notFound("deposit");
-    return rows[0];
-  }
-
-  /** The widget proves it holds this deposit's client secret. */
-  async function loadForWidget(id: string, clientSecret: string, res: Response): Promise<DepositRow> {
-    const d = await load(id, currentApp(res));
-    if (!safeEqual(d.client_secret_hash, hashKey(clientSecret))) throw notFound("deposit");
-    return d;
-  }
+  const load = (id: string, app: AppRow) => loadDeposit(db, id, app);
+  const loadForWidget = (id: string, clientSecret: string, res: Response) =>
+    loadDepositForWidget(db, id, clientSecret, currentApp(res));
 
   async function update(id: string, fields: Partial<DepositRow>): Promise<DepositRow> {
     const keys = Object.keys(fields);

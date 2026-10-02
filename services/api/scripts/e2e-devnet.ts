@@ -136,15 +136,50 @@ async function signAndSubmit(prepared: Record<string, unknown>) {
   return String(signature);
 }
 
-// ---- Setup: passkey + wallet ----
+async function refused(what: string, code: string, run: () => Promise<unknown>) {
+  try {
+    await run();
+    console.log(`   ✗ UNEXPECTED: ${what} went through`);
+    return false;
+  } catch (e) {
+    const ok = (e as Error).message.includes(code);
+    console.log(`   ${ok ? "✓" : "✗"} ${what}: ${(e as Error).message}`);
+    return ok;
+  }
+}
+
+// ---- Setup: passkey + wallet, for a deposit the app's server created ----
 const passkey = fakePasskey();
 const credentialId = b64url(randomBytes(16));
 step("setup 1/2: register the passkey (the user's Swish ID)");
 console.log("   swish id", (await call("/v1/setup/passkey", { credential_id: credentialId, public_key: b64url(passkey.spki) }, "widget")).swish_id);
 
-step("setup 2/2: link the wallet with a 50 USDC allowance (the wallet signs; Swish pays)");
+step("the publishable key alone cannot make Swish pay for a wallet");
+const bare = await refused("setup without a deposit", "invalid_request", () =>
+  call("/v1/setup/wallet/prepare", { credential_id: credentialId, wallet: userWallet.address, allowance: "50" }, "widget"),
+);
+
+const createDeposit = (amount: string, reference: string) =>
+  call("/v1/deposits", { amount, token: "USDC", destination: userInApp.address, reference }, "server");
+const forDeposit = (d: Record<string, unknown>) => ({ deposit_id: d.id, client_secret: d.client_secret });
+
+step("a 200 deposit: the wallet holds 100, so setup is refused before Swish spends anything");
+const big = await createDeposit("200", "e2e-big");
+const sponsorBefore = (await rpc.getBalance(sponsor.address).send()).value;
+const tooBig = await refused("setup for 200 with 100 in the wallet", "not_enough_usdc", () =>
+  call("/v1/setup/wallet/prepare", { credential_id: credentialId, wallet: userWallet.address, allowance: "50", ...forDeposit(big) }, "widget"),
+);
+const sponsorUntouched = (await rpc.getBalance(sponsor.address).send()).value === sponsorBefore;
+console.log(`   ${sponsorUntouched ? "✓" : "✗"} sponsor balance unchanged`);
+
+step("the app's server creates a 12.5 deposit; setup 2/2 links the wallet for it with a 50 USDC allowance (the wallet signs; Swish pays)");
+const first = await createDeposit("12.5", "e2e-1");
 for (;;) {
-  const next = await call("/v1/setup/wallet/prepare", { credential_id: credentialId, wallet: userWallet.address, allowance: "50" }, "widget");
+  const next = await call(
+    "/v1/setup/wallet/prepare",
+    { credential_id: credentialId, wallet: userWallet.address, allowance: "50", ...forDeposit(first) },
+    "widget",
+  );
   if (next.done) break;
   console.log(`   ${next.step}:`, tx(await signAndSubmit(next)));
 }
@@ -159,11 +194,10 @@ async function balance(owner: Address) {
   }
 }
 
-async function faceIdDeposit(amount: string, reference: string) {
-  const d = await call("/v1/deposits", { amount, token: "USDC", destination: userInApp.address, reference }, "server");
+async function faceId(d: Record<string, unknown>) {
   const c = await call(`/v1/deposits/${d.id}/challenge`, { client_secret: d.client_secret }, "widget");
   const a = passkey.assert(fromB64url(String(c.challenge)));
-  const r = await call(
+  return call(
     `/v1/deposits/${d.id}/submit`,
     {
       client_secret: d.client_secret,
@@ -174,64 +208,70 @@ async function faceIdDeposit(amount: string, reference: string) {
     },
     "widget",
   );
-  return { deposit: d, result: r };
 }
 
-step("the app's server creates a 12.5 deposit into the user's own account in the app; Face ID (emulated) approves it");
-const { deposit, result } = await faceIdDeposit("12.5", "e2e-1");
-console.log(`   deposit ${deposit.id} ${result.status}:`, tx(String(result.signature)));
+step("Face ID (emulated) approves the 12.5 deposit into the user's own account in the app");
+const result = await faceId(first);
+console.log(`   deposit ${first.id} ${result.status}:`, tx(String(result.signature)));
 
 step("check the chain");
 const [walletLeft, landed] = await Promise.all([balance(userWallet.address), balance(userInApp.address)]);
 console.log(`   user's wallet: ${Number(walletLeft) / 1e6} (was 100) · user's account in the app: ${Number(landed) / 1e6}`);
 console.log(`   webhook: ${webhooks[0]}`);
 
-step("the same deposit cannot run twice");
-try {
-  await call(`/v1/deposits/${deposit.id}/challenge`, { client_secret: deposit.client_secret }, "widget");
-  console.log("   ✗ UNEXPECTED: a second challenge was issued");
-  process.exitCode = 1;
-} catch (e) {
-  console.log(`   ✓ refused: ${(e as Error).message}`);
-}
+step("the same deposit cannot run twice, nor set anything up any more");
+const twice = await refused("a second challenge", "not_open", () =>
+  call(`/v1/deposits/${first.id}/challenge`, { client_secret: first.client_secret }, "widget"),
+);
+const afterDone = await refused("setup for a finished deposit", "not_open", () =>
+  call("/v1/setup/wallet/limit", { credential_id: credentialId, wallet: userWallet.address, add: "100", ...forDeposit(first) }, "widget"),
+);
 
 step("a 40 deposit with 37.5 of allowance left must be refused");
-let refused = false;
-try {
-  await faceIdDeposit("40", "e2e-2");
-} catch (e) {
-  refused = /no_funds/.test((e as Error).message);
-  console.log(`   ${refused ? "✓" : "✗"} ${(e as Error).message}`);
-}
+const forty = await createDeposit("40", "e2e-2");
+const noFunds = await refused("40 with 37.5 left", "no_funds", () => faceId(forty));
 
-step("add 100 to the limit: the wallet signs ONE transaction (old allowance revoked, new total created)");
+step("for that same deposit, add 100 to the limit: the wallet signs ONE transaction (old allowance revoked, new total created)");
 const leftNow = await call("/v1/setup/wallet/allowance", { credential_id: credentialId, wallet: userWallet.address }, "widget");
-const limit = await call("/v1/setup/wallet/limit", { credential_id: credentialId, wallet: userWallet.address, add: "100" }, "widget");
+const limit = await call(
+  "/v1/setup/wallet/limit",
+  { credential_id: credentialId, wallet: userWallet.address, add: "100", ...forDeposit(forty) },
+  "widget",
+);
 console.log(`   left now ${leftNow.left} · shown before signing: ${limit.left_now} + 100 = ${limit.new_limit}`);
 console.log(`   ${limit.step}:`, tx(await signAndSubmit(limit)));
 const allowances = await chain.allowances(userWallet.address, mint.address);
 console.log(`   allowances now: ${allowances.map((a) => `nonce ${a.nonce} = ${Number(a.amount) / 1e6}`).join(", ")}`);
 
 step("the same 40 deposit now goes through (137.5 − 40 = 97.5 left)");
-const second = await faceIdDeposit("40", "e2e-3");
-console.log(`   ${second.result.status}:`, tx(String(second.result.signature)));
+const second = await faceId(forty);
+console.log(`   ${second.status}:`, tx(String(second.signature)));
 const [walletAfter, landedAfter] = await Promise.all([balance(userWallet.address), balance(userInApp.address)]);
 const leftAfter = (await chain.allowances(userWallet.address, mint.address))[0]?.amount;
 console.log(`   user's wallet: ${Number(walletAfter) / 1e6} · in the app: ${Number(landedAfter) / 1e6} · allowance left: ${Number(leftAfter) / 1e6}`);
 
 const ok =
+  bare &&
+  tooBig &&
+  sponsorUntouched &&
   result.status === "succeeded" &&
   walletLeft === units(87.5) &&
   landed === units(12.5) &&
-  refused &&
+  twice &&
+  afterDone &&
+  noFunds &&
   allowances.length === 1 &&
   leftNow.left === "37.5" &&
   limit.new_limit === "137.5" &&
   allowances[0]!.amount === units(137.5) &&
-  second.result.status === "succeeded" &&
+  second.status === "succeeded" &&
   walletAfter === units(47.5) &&
   landedAfter === units(52.5) &&
   leftAfter === units(97.5);
-console.log(ok ? "\n✅ end to end on devnet: deposits, the limit refusing one, raising it, and the retry" : "\n❌ something is off (see above)");
+console.log(
+  ok
+    ? "\n✅ end to end on devnet: setup only for a real deposit, deposits, the limit refusing one, raising it, and the retry"
+    : "\n❌ something is off (see above)",
+);
 if (!ok) process.exitCode = 1;
 server.close();
