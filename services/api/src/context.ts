@@ -29,6 +29,8 @@ export interface AppRow {
 }
 
 export const USDC_DECIMALS = 6;
+/** Below this a deposit costs Swish more in rent (~$0.40) than it is worth. */
+export const MIN_DEPOSIT = "1";
 /** How long a Face ID approval stays valid (the program allows up to 120 s). */
 export const SIGNATURE_LIFETIME_SECONDS = 90;
 /** Setup calls one IP may make a minute. A first-time setup is 6 to 8. */

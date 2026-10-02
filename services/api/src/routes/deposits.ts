@@ -10,7 +10,7 @@ import { currentApp, requirePublishableKey, requireSecretKey } from "../auth.js"
 import { ChainError } from "../chain/client.js";
 import { pullChallenge, pullInstruction, receiptPda, swishIdPda, uuidBytes } from "../chain/program.js";
 import { PasskeyError, b64url, fromB64url, secp256r1Instruction, verifyAssertion } from "../chain/webauthn.js";
-import { SIGNATURE_LIFETIME_SECONDS, USDC_DECIMALS, type AppRow, type Deps } from "../context.js";
+import { MIN_DEPOSIT, SIGNATURE_LIFETIME_SECONDS, USDC_DECIMALS, type AppRow, type Deps } from "../context.js";
 import type { Db } from "../db.js";
 import { HttpError, badRequest, notFound } from "../http.js";
 import { hashKey, newClientSecret, safeEqual } from "../keys.js";
@@ -58,11 +58,11 @@ const uuid = z.string().uuid();
 const createBody = z.object({
   amount: z.string().refine((a) => {
     try {
-      return toBaseUnits(a, USDC_DECIMALS) > 0n;
+      return toBaseUnits(a, USDC_DECIMALS) >= toBaseUnits(MIN_DEPOSIT, USDC_DECIMALS);
     } catch {
       return false;
     }
-  }, 'a positive amount with at most 6 decimals, as a string, e.g. "12.50"'),
+  }, `at least ${MIN_DEPOSIT} USDC, with at most 6 decimals, as a string, e.g. "12.50"`),
   token: z.literal("USDC"),
   /** The user's own address in your app: the deposit lands in its USDC account. */
   destination: solanaAddress,

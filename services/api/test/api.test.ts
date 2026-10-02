@@ -182,6 +182,15 @@ describe("your server creates deposits", () => {
     expect(read.body.client_secret).toBeUndefined();
   });
 
+  it("refuses less than 1 USDC: below that the rent Swish pays is worth more than the deposit", async () => {
+    for (const amount of ["0.999999", "0.000001", "0"]) {
+      const res = await server().post("/v1/deposits", { amount, token: "USDC", destination: USER_IN_APP });
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain("at least 1 USDC");
+    }
+    expect((await createDeposit("1")).id).toBeDefined();
+  });
+
   it("refuses bad input and duplicate references", async () => {
     for (const amount of ["0", "-1", "1.1234567", "abc"]) {
       const res = await server().post("/v1/deposits", { amount, token: "USDC", destination: USER_IN_APP });
