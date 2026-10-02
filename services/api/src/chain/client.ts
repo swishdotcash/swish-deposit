@@ -50,6 +50,7 @@ import {
   computeUnitPrice,
   linkedWalletPda,
   pullerPda,
+  receiptPda,
 } from "./program.js";
 
 /** One linked wallet that can pay a deposit right now. */
@@ -94,6 +95,8 @@ export interface Chain {
   linkedSwishId(wallet: Address): Promise<Address | null>;
   /** The wallet's Foundation authority for this mint, if it has one. */
   subscriptionAuthority(wallet: Address, mint: Address): Promise<{ initId: bigint } | null>;
+  /** A deposit's receipt: who paid its rent. Null once closed (or never made). */
+  receipt(depositId: Uint8Array): Promise<{ rentPayer: Address } | null>;
   /** The wallet's token balance in base units; null when it has no token account. */
   tokenBalance(wallet: Address, mint: Address): Promise<bigint | null>;
   /** Whether an account exists. */
@@ -232,6 +235,14 @@ export class SolanaChain implements Chain {
     const [ata] = await findAssociatedTokenPda({ owner: wallet, mint, tokenProgram: TOKEN_PROGRAM });
     const token = await fetchMaybeToken(this.rpc, ata);
     return token.exists ? token.data.amount : null;
+  }
+
+  async receipt(depositId: Uint8Array): Promise<{ rentPayer: Address } | null> {
+    const { value } = await this.rpc.getAccountInfo(await receiptPda(depositId), { encoding: "base64" }).send();
+    if (!value) return null;
+    // DepositReceipt: discriminator (8) · expires_at (8) · rent_payer (32) · bump
+    const data = getBase64Encoder().encode(value.data[0]);
+    return { rentPayer: getAddressDecoder().decode(data.subarray(16, 48)) };
   }
 
   async exists(account: Address): Promise<boolean> {

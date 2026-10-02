@@ -9,11 +9,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Allowance, Chain, Source } from "../src/chain/client.js";
 import { ChainError } from "../src/chain/client.js";
-import { PROGRAM_ID, SECP256R1_PROGRAM, TOKEN_PROGRAM, swishIdPda } from "../src/chain/program.js";
+import { PROGRAM_ID, SECP256R1_PROGRAM, TOKEN_PROGRAM, receiptPda, swishIdPda, uuidBytes } from "../src/chain/program.js";
 import { b64url, fromB64url } from "../src/chain/webauthn.js";
 import type { Deps } from "../src/context.js";
 import { migrate, type Db } from "../src/db.js";
 import { hashKey, newPublishableKey, newSecretKey } from "../src/keys.js";
+import { closeReceipts } from "../src/receipts.js";
 import { signWebhook } from "../src/webhooks.js";
 import { fakePasskey } from "./helpers.js";
 
@@ -55,6 +56,11 @@ class FakeChain implements Chain {
   }
   async linkedSwishId() {
     return this.linkedTo;
+  }
+  /** Receipts on chain, by deposit id bytes (hex). */
+  receipts = new Set<string>();
+  async receipt(depositId: Uint8Array) {
+    return this.receipts.has(Buffer.from(depositId).toString("hex")) ? { rentPayer: this.sponsor.address } : null;
   }
   async tokenBalance() {
     return this.balance;
@@ -467,5 +473,59 @@ describe("setup", () => {
     expect(last!.headers["retry-after"]).toBeDefined();
     // deposits themselves are not held back by it
     expect((await server().get(`/v1/deposits/${(await createDeposit()).id}`)).status).toBe(200);
+  });
+});
+
+describe("closing receipts (rent back to Swish)", () => {
+  async function deposit(status: string, expiresAgoSeconds: number, onChain = true) {
+    const d = await createDeposit();
+    await w.deps.db.query(
+      `update deposits set status = $2, expires_at = now() - make_interval(secs => $3) where id = $1`,
+      [d.id, status, expiresAgoSeconds],
+    );
+    if (onChain) w.chain.receipts.add(Buffer.from(uuidBytes(d.id)).toString("hex"));
+    return d.id;
+  }
+  const closedAt = async (id: string) =>
+    (await w.deps.db.query<{ receipt_closed_at: Date | null }>("select receipt_closed_at from deposits where id = $1", [id]))
+      .rows[0]!.receipt_closed_at;
+
+  it("closes finished deposits' receipts, 8 to a transaction, to whoever paid the rent", async () => {
+    const done = [];
+    for (let i = 0; i < 9; i++) done.push(await deposit("succeeded", 60));
+    const { closed, signatures } = await closeReceipts(w.deps);
+    expect(closed).toBe(9);
+    expect(signatures).toHaveLength(2);
+    expect(w.chain.sent.map((ixs) => ixs.length)).toEqual([8, 1]);
+    const [ix] = w.chain.sent[1]!;
+    expect(ix!.programAddress).toBe(PROGRAM_ID);
+    expect(ix!.accounts!.map((a) => a.address)).toEqual([await receiptPda(uuidBytes(done[8]!)), w.chain.sponsor.address]);
+    for (const id of done) expect(await closedAt(id)).not.toBeNull();
+    expect((await closeReceipts(w.deps)).closed).toBe(0);
+  });
+
+  it("leaves receipts still needed: not yet past the deadline, or a deposit still being checked", async () => {
+    const fresh = await deposit("succeeded", -60);
+    const inFlight = await deposit("submitted", 60);
+    const failed = await deposit("failed", 60, false);
+    expect((await closeReceipts(w.deps)).closed).toBe(0);
+    expect(w.chain.sent).toHaveLength(0);
+    for (const id of [fresh, inFlight, failed]) expect(await closedAt(id)).toBeNull();
+  });
+
+  it("marks one someone else already closed without sending anything", async () => {
+    const id = await deposit("succeeded", 60, false);
+    expect((await closeReceipts(w.deps)).closed).toBe(0);
+    expect(w.chain.sent).toHaveLength(0);
+    expect(await closedAt(id)).not.toBeNull();
+  });
+
+  it("leaves a batch open when its transaction fails, for the next run", async () => {
+    const id = await deposit("succeeded", 60);
+    w.chain.fail = new Error("blockhash expired");
+    expect((await closeReceipts(w.deps)).closed).toBe(0);
+    expect(await closedAt(id)).toBeNull();
+    w.chain.fail = null;
+    expect((await closeReceipts(w.deps)).closed).toBe(1);
   });
 });

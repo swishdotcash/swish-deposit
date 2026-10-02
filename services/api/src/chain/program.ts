@@ -98,6 +98,15 @@ export async function registerAppInstruction(admin: TransactionSigner, appId: Ui
   };
 }
 
+/** Closes a deposit's receipt once its deadline has passed; the rent goes back to `rentPayer`. */
+export async function closeReceiptInstruction(depositId: Uint8Array, rentPayer: Address): Promise<Instruction> {
+  return {
+    programAddress: PROGRAM_ID,
+    accounts: [w(await receiptPda(depositId)), w(rentPayer)],
+    data: discriminator("close_receipt"),
+  };
+}
+
 /**
  * Links `wallet` to the Swish ID of `passkey` (created on first use). The
  * wallet must sign; `payer` (Swish) pays the rent.
