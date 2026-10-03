@@ -9,9 +9,18 @@ export interface Db {
   exec?(sql: string): Promise<unknown>;
 }
 
+/**
+ * Hosted Postgres hands out libpq-style URLs with `sslrootcert=system` ("use
+ * the machine's certificate store"). node-postgres would open a file called
+ * "system"; it already verifies against Node's own store, so the hint goes.
+ */
+export function connectionString(url: string): string {
+  return url.replace(/([?&])sslrootcert=system(&|$)/, (_m, before: string, after: string) => (after ? before : ""));
+}
+
 export function connect(url: string): pg.Pool {
   // numeric(20,0) comes back as a string by default; keep it that way (u64).
-  return new pg.Pool({ connectionString: url, max: 5 });
+  return new pg.Pool({ connectionString: connectionString(url), max: 5 });
 }
 
 const MIGRATIONS = fileURLToPath(new URL("../migrations/", import.meta.url));
