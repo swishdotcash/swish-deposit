@@ -6,6 +6,7 @@ import { createApp } from "./app.js";
 import { SolanaChain } from "./chain/client.js";
 import { loadEnv } from "./config/env.js";
 import { connect } from "./db.js";
+import { ensureLookupTable } from "./lookup.js";
 import { scheduleReceiptCleanup } from "./receipts.js";
 import { sponsorFromSecret } from "./sponsor.js";
 
@@ -21,6 +22,9 @@ const app = createApp({
   serverSecret: Buffer.from(env.SERVER_SECRET, "hex"),
   fetch,
 });
+
+// Without the table a deposit can outgrow a transaction; never fatal at boot.
+await ensureLookupTable(db, chain, address(env.USDC_MINT)).catch((e) => console.error("[lookup table]", e));
 
 scheduleReceiptCleanup({ db, chain });
 

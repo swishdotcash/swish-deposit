@@ -29,7 +29,7 @@ import { z } from "zod";
 import { fromBaseUnits, toBaseUnits } from "../amount.js";
 import { currentApp, requirePublishableKey } from "../auth.js";
 import { MAX_ALLOWANCE_NONCE, type Allowance } from "../chain/client.js";
-import { linkWalletInstruction, pullerPda, swishIdPda, TOKEN_PROGRAM } from "../chain/program.js";
+import { linkWalletInstruction, pullerPda, swishIdPda, TOKEN_PROGRAM, unlinkWalletInstruction } from "../chain/program.js";
 import { PasskeyError, compressPublicKey, fromB64url } from "../chain/webauthn.js";
 import {
   SETUP_CALLS_PER_IP_PER_MINUTE,
@@ -79,6 +79,11 @@ const limitBody = walletRef.extend({
   /** Added on top of what is left, e.g. "100". */
   add: positiveAmount,
 });
+
+const unlinkBody = z.object({ wallet: z.string().refine(isAddress, "not a Solana address") });
+
+/** Seals an unlink: it belongs to no deposit and costs Swish nothing net. */
+const UNLINK = "unlink";
 
 const submitBody = z.object({
   /** The transaction from `prepare`, signed by the wallet, base64. */
@@ -227,8 +232,38 @@ export function setupRouter(deps: Deps): Router {
   router.post("/v1/setup/wallet/allowance", publishable, async (req, res) => {
     const body = walletRef.parse(req.body);
     const walletAddress = address(body.wallet);
-    const allowances = await chain.allowances(walletAddress, deps.usdcMint);
-    res.json({ wallet: walletAddress, left: fromBaseUnits(leftOf(allowances), USDC_DECIMALS), token: "USDC" });
+    const [allowances, balance] = await Promise.all([
+      chain.allowances(walletAddress, deps.usdcMint),
+      chain.tokenBalance(walletAddress, deps.usdcMint),
+    ]);
+    res.json({
+      wallet: walletAddress,
+      left: fromBaseUnits(leftOf(allowances), USDC_DECIMALS),
+      balance: fromBaseUnits(balance ?? 0n, USDC_DECIMALS),
+      token: "USDC",
+    });
+  });
+
+  /**
+   * Unlinks a wallet from its Swish ID and cancels what is left of its
+   * limit, in one transaction the wallet signs. Submit it like a setup step.
+   * No deposit needed: the rent that comes back to Swish is worth more than
+   * the fee, and only a wallet that is linked has anything to unlink.
+   */
+  router.post("/v1/setup/wallet/unlink", publishable, async (req, res) => {
+    const body = unlinkBody.parse(req.body);
+    const walletAddress = address(body.wallet);
+    const wallet = createNoopSigner(walletAddress);
+    const [link, allowances] = await Promise.all([
+      chain.linkedWallet(walletAddress),
+      chain.allowances(walletAddress, deps.usdcMint),
+    ]);
+    if (!link) throw badRequest("not_linked", "This wallet is not linked to Swish.");
+    const instructions = allowances.map((a) =>
+      getRevokeDelegationOverlayInstruction({ authority: wallet, delegationAccount: a.address, receiver: chain.sponsor.address }),
+    );
+    instructions.push(await unlinkWalletInstruction(wallet, link.swishId, link.rentPayer));
+    return respond(res, UNLINK, "unlink", instructions);
   });
 
   /**
@@ -297,7 +332,7 @@ export function setupRouter(deps: Deps): Router {
   async function respond(
     res: import("express").Response,
     depositId: string,
-    step: "authorize" | "allow" | "limit",
+    step: "authorize" | "allow" | "limit" | "unlink",
     instructions: Parameters<typeof chain.buildForWallet>[0],
     extra: Record<string, string> = {},
   ) {
@@ -328,14 +363,16 @@ export function setupRouter(deps: Deps): Router {
       ([signer, sig]) => signer !== chain.sponsor.address && sig === null,
     );
     if (missing.length) throw badRequest("unsigned", "the wallet has not signed this transaction");
-    // Swish pays a fee per transaction: a few per deposit, while it is open.
-    const { rows: counted } = await db.query(
-      `update deposits set setup_txs = setup_txs + 1, updated_at = now()
-       where id = $1 and status = 'created' and setup_txs < $2 returning id`,
-      [depositId, SETUP_TRANSACTIONS_PER_DEPOSIT],
-    );
-    if (!counted[0]) {
-      throw new HttpError(429, "setup_limit", "Too many setup transactions for this deposit. Start a new deposit.");
+    if (depositId !== UNLINK) {
+      // Swish pays a fee per transaction: a few per deposit, while it is open.
+      const { rows: counted } = await db.query(
+        `update deposits set setup_txs = setup_txs + 1, updated_at = now()
+         where id = $1 and status = 'created' and setup_txs < $2 returning id`,
+        [depositId, SETUP_TRANSACTIONS_PER_DEPOSIT],
+      );
+      if (!counted[0]) {
+        throw new HttpError(429, "setup_limit", "Too many setup transactions for this deposit. Start a new deposit.");
+      }
     }
     const signature = await chain.sendWalletSigned(tx);
     res.json({ signature });

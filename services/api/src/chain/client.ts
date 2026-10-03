@@ -6,6 +6,7 @@ import {
   appendTransactionMessageInstructions,
   SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR,
   compileTransaction,
+  compressTransactionMessageUsingAddressLookupTables,
   createDefaultRpcTransport,
   createSolanaRpcFromTransport,
   createTransactionMessage,
@@ -41,7 +42,14 @@ import {
 } from "@solana/subscriptions";
 
 import {
+  createLookupTableInstruction,
+  extendLookupTableInstruction,
+  lookupTablePda,
+  tableAddresses,
+} from "./lookupTable.js";
+import {
   LINKED_WALLET_SIZE,
+  LINKED_WALLET_RENT_PAYER_OFFSET,
   LINKED_WALLET_SWISH_ID_OFFSET,
   PROGRAM_ID,
   TOKEN_PROGRAM,
@@ -82,17 +90,29 @@ export interface WalletTransaction {
   messageBytes: Uint8Array;
 }
 
+export interface LinkedWallet {
+  swishId: Address;
+  rentPayer: Address;
+}
+
 export interface Chain {
   sponsor: KeyPairSigner;
   clusterTag(): Promise<Uint8Array>;
   /** The token account a deposit to `owner` lands in (their associated account). */
   destinationFor(owner: Address, mint: Address): Promise<Address>;
-  /** The first wallet of this Swish ID with enough balance and allowance. */
-  findSource(swishId: Address, mint: Address, amount: bigint): Promise<Source | null>;
+  /**
+   * The first wallet of this Swish ID with enough balance and allowance; with
+   * `only`, that wallet or nothing.
+   */
+  findSource(swishId: Address, mint: Address, amount: bigint, only?: Address): Promise<Source | null>;
+  /** Every wallet linked to this Swish ID. */
+  linkedWallets(swishId: Address): Promise<Address[]>;
   /** The wallet's allowances naming our puller for this mint (normally one). */
   allowances(wallet: Address, mint: Address): Promise<Allowance[]>;
   /** The Swish ID a wallet is linked to, if any. */
   linkedSwishId(wallet: Address): Promise<Address | null>;
+  /** A wallet's link: its Swish ID and who paid the link's rent. */
+  linkedWallet(wallet: Address): Promise<LinkedWallet | null>;
   /** The wallet's Foundation authority for this mint, if it has one. */
   subscriptionAuthority(wallet: Address, mint: Address): Promise<{ initId: bigint } | null>;
   /** A deposit's receipt: who paid its rent. Null once closed (or never made). */
@@ -128,7 +148,11 @@ export class ChainError extends Error {
 
 const RATE_LIMIT_RETRIES = 5;
 
-/** RPC providers answer 429 under load; wait and ask again instead of failing a deposit. */
+/**
+ * RPC providers answer 429 under load, and drop a connection now and then;
+ * wait and ask again instead of failing a deposit. Safe for sends too: the
+ * same signed transaction is the same transaction.
+ */
 function retryOnRateLimit(transport: RpcTransport): RpcTransport {
   return (async (config: Parameters<RpcTransport>[0]) => {
     for (let attempt = 0; ; attempt++) {
@@ -137,7 +161,9 @@ function retryOnRateLimit(transport: RpcTransport): RpcTransport {
       } catch (e) {
         const limited =
           isSolanaError(e, SOLANA_ERROR__RPC__TRANSPORT_HTTP_ERROR) && e.context.statusCode === 429;
-        if (!limited || attempt >= RATE_LIMIT_RETRIES) throw e;
+        // fetch itself failing (timeout, socket closed) is a TypeError, not an RPC answer.
+        const dropped = e instanceof TypeError;
+        if (!(limited || dropped) || attempt >= RATE_LIMIT_RETRIES) throw e;
         await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
       }
     }
@@ -150,12 +176,47 @@ const nowSeconds = () => BigInt(Math.floor(Date.now() / 1000));
 export class SolanaChain implements Chain {
   private readonly rpc: Rpc<SolanaRpcApi>;
   private tag?: Uint8Array;
+  /** Shrinks what the sponsor sends: see lookupTable.ts. */
+  private lookup?: { table: Address; addresses: Address[] };
 
   constructor(
     rpcUrl: string,
     readonly sponsor: KeyPairSigner,
   ) {
     this.rpc = createSolanaRpcFromTransport(retryOnRateLimit(createDefaultRpcTransport({ url: rpcUrl })));
+  }
+
+  /**
+   * Uses this lookup table for what the sponsor sends, if it is on chain and
+   * holds every address in `wanted`. Says whether it does.
+   */
+  async useLookupTable(table: Address, wanted: Address[]): Promise<boolean> {
+    const { value } = await this.rpc.getAccountInfo(table, { encoding: "base64" }).send();
+    if (!value) return false;
+    const addresses = tableAddresses(getBase64Encoder().encode(value.data[0]) as Uint8Array);
+    if (!wanted.every((a) => addresses.includes(a))) return false;
+    this.lookup = { table, addresses };
+    return true;
+  }
+
+  /** Creates a lookup table holding `addresses`; the sponsor pays and owns it. */
+  async createLookupTable(addresses: Address[]): Promise<Address> {
+    // The table's address includes a recent slot the validator must know. RPC
+    // nodes run a little out of step with each other, so try a few.
+    for (let attempt = 0; ; attempt++) {
+      const recentSlot = await this.rpc.getSlot({ commitment: "finalized" }).send();
+      const [table, bump] = await lookupTablePda(this.sponsor.address, recentSlot);
+      try {
+        await this.send([
+          createLookupTableInstruction(table, this.sponsor, recentSlot, bump),
+          extendLookupTableInstruction(table, this.sponsor, addresses),
+        ]);
+        return table;
+      } catch (e) {
+        if (attempt >= 4) throw e;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
   }
 
   async clusterTag(): Promise<Uint8Array> {
@@ -171,7 +232,23 @@ export class SolanaChain implements Chain {
     return ata;
   }
 
-  async findSource(swishId: Address, mint: Address, amount: bigint): Promise<Source | null> {
+  async findSource(swishId: Address, mint: Address, amount: bigint, only?: Address): Promise<Source | null> {
+    for (const wallet of await this.linkedWallets(swishId)) {
+      if (only && wallet !== only) continue;
+      const [tokenAccount] = await findAssociatedTokenPda({ owner: wallet, mint, tokenProgram: TOKEN_PROGRAM });
+      const [token, allowances] = await Promise.all([fetchMaybeToken(this.rpc, tokenAccount), this.allowances(wallet, mint)]);
+      if (!token.exists || token.data.amount < amount) continue;
+      const usable = allowances.find(
+        (a) => a.amount >= amount && (a.expiryTs === 0n || a.expiryTs >= nowSeconds()),
+      );
+      if (usable) {
+        return { wallet, tokenAccount, subscriptionAuthority: usable.subscriptionAuthority, delegation: usable.address };
+      }
+    }
+    return null;
+  }
+
+  async linkedWallets(swishId: Address): Promise<Address[]> {
     const linked = await this.rpc
       .getProgramAccounts(PROGRAM_ID, {
         encoding: "base64",
@@ -187,20 +264,7 @@ export class SolanaChain implements Chain {
         ],
       })
       .send();
-    for (const { account } of linked) {
-      const data = getBase64Encoder().encode(account.data[0]);
-      const wallet = getAddressDecoder().decode(data.subarray(8, 40));
-      const [tokenAccount] = await findAssociatedTokenPda({ owner: wallet, mint, tokenProgram: TOKEN_PROGRAM });
-      const [token, allowances] = await Promise.all([fetchMaybeToken(this.rpc, tokenAccount), this.allowances(wallet, mint)]);
-      if (!token.exists || token.data.amount < amount) continue;
-      const usable = allowances.find(
-        (a) => a.amount >= amount && (a.expiryTs === 0n || a.expiryTs >= nowSeconds()),
-      );
-      if (usable) {
-        return { wallet, tokenAccount, subscriptionAuthority: usable.subscriptionAuthority, delegation: usable.address };
-      }
-    }
-    return null;
+    return linked.map(({ account }) => getAddressDecoder().decode(getBase64Encoder().encode(account.data[0]).subarray(8, 40)));
   }
 
   async allowances(wallet: Address, mint: Address): Promise<Allowance[]> {
@@ -219,10 +283,15 @@ export class SolanaChain implements Chain {
   }
 
   async linkedSwishId(wallet: Address): Promise<Address | null> {
+    return (await this.linkedWallet(wallet))?.swishId ?? null;
+  }
+
+  async linkedWallet(wallet: Address): Promise<LinkedWallet | null> {
     const { value } = await this.rpc.getAccountInfo(await linkedWalletPda(wallet), { encoding: "base64" }).send();
     if (!value) return null;
     const data = getBase64Encoder().encode(value.data[0]);
-    return getAddressDecoder().decode(data.subarray(LINKED_WALLET_SWISH_ID_OFFSET, LINKED_WALLET_SWISH_ID_OFFSET + 32));
+    const at = (offset: number) => getAddressDecoder().decode(data.subarray(offset, offset + 32));
+    return { swishId: at(LINKED_WALLET_SWISH_ID_OFFSET), rentPayer: at(LINKED_WALLET_RENT_PAYER_OFFSET) };
   }
 
   async subscriptionAuthority(wallet: Address, mint: Address) {
@@ -265,7 +334,12 @@ export class SolanaChain implements Chain {
   }
 
   async send(instructions: Instruction[]): Promise<string> {
-    const tx = await signTransactionMessageWithSigners(await this.message(instructions));
+    const message = await this.message(instructions);
+    const tx = await signTransactionMessageWithSigners(
+      this.lookup
+        ? compressTransactionMessageUsingAddressLookupTables(message, { [this.lookup.table]: this.lookup.addresses })
+        : message,
+    );
     return this.sendAndConfirm(tx);
   }
 

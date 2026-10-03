@@ -71,11 +71,17 @@ const createBody = z.object({
 
 const widgetBody = z.object({ client_secret: z.string().min(1) });
 
-const submitBody = widgetBody.extend({
+/** A Face ID approval of this deposit, as the browser returned it. */
+const approvalBody = widgetBody.extend({
   credential_id: z.string().min(1),
   authenticator_data: z.string().min(1),
   client_data_json: z.string().min(1),
   signature: z.string().min(1),
+});
+
+const submitBody = approvalBody.extend({
+  /** Which of the user's linked wallets pays; any that can, when left out. */
+  wallet: solanaAddress.optional(),
 });
 
 async function loadDeposit(db: Db, id: string, app: AppRow): Promise<DepositRow> {
@@ -169,6 +175,42 @@ export function depositsRouter(deps: Deps): Router {
     });
   });
 
+  /**
+   * The wallets this deposit can come from, shown before any money moves.
+   * Only someone holding a valid Face ID approval of this deposit gets them.
+   */
+  router.post("/v1/deposits/:id/sources", publishable, async (req, res) => {
+    const body = approvalBody.parse(req.body);
+    const d = await loadForWidget(String(req.params.id), body.client_secret, res);
+    if (d.status !== "created") throw new HttpError(409, "not_open", `this deposit is ${d.status}`);
+    if (!d.expires_at || new Date(d.expires_at).getTime() <= Date.now()) {
+      throw new HttpError(409, "expired", "the approval expired; ask for a new challenge");
+    }
+    let swishId: Address;
+    try {
+      ({ swishId } = await approvedBy(d, body));
+    } catch (e) {
+      if (e instanceof PasskeyError) throw badRequest("passkey_rejected", e.message);
+      throw e;
+    }
+    const amount = BigInt(d.amount);
+    const mint = address(d.mint);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const wallets = await Promise.all(
+      (await chain.linkedWallets(swishId)).map(async (wallet) => {
+        const [balance, allowances] = await Promise.all([chain.tokenBalance(wallet, mint), chain.allowances(wallet, mint)]);
+        const live = allowances.filter((a) => a.expiryTs === 0n || a.expiryTs >= now);
+        return {
+          wallet,
+          balance: fromBaseUnits(balance ?? 0n, USDC_DECIMALS),
+          left: fromBaseUnits(live.reduce((sum, a) => sum + a.amount, 0n), USDC_DECIMALS),
+          enough: (balance ?? 0n) >= amount && live.some((a) => a.amount >= amount),
+        };
+      }),
+    );
+    res.json({ token: "USDC", wallets });
+  });
+
   router.post("/v1/deposits/:id/submit", publishable, async (req, res) => {
     const app = currentApp(res);
     const body = submitBody.parse(req.body);
@@ -217,7 +259,8 @@ export function depositsRouter(deps: Deps): Router {
       });
     }
     void sendWebhook(deps, app, final);
-    res.json(depositView(final));
+    // The widget also learns which of the user's wallets paid.
+    res.json({ ...depositView(final), wallet: final.wallet });
   });
 
   async function challengeFor(d: DepositRow): Promise<Uint8Array> {
@@ -232,7 +275,8 @@ export function depositsRouter(deps: Deps): Router {
     });
   }
 
-  async function prepareSubmit(d: DepositRow, body: z.infer<typeof submitBody>) {
+  /** Checks the approval is this deposit's, from a registered passkey. Throws PasskeyError. */
+  async function approvedBy(d: DepositRow, body: z.infer<typeof approvalBody>) {
     const { rows } = await db.query<{ public_key: Uint8Array; swish_id: string }>(
       "select public_key, swish_id from passkeys where credential_id = $1",
       [body.credential_id],
@@ -251,12 +295,22 @@ export function depositsRouter(deps: Deps): Router {
       { rpId: deps.rpId, challenge: await challengeFor(d) },
     );
 
-    const swishId = await swishIdPda(publicKey);
+    return { publicKey, compactSignature, message, swishId: await swishIdPda(publicKey) };
+  }
+
+  async function prepareSubmit(d: DepositRow, body: z.infer<typeof submitBody>) {
+    const { publicKey, compactSignature, message, swishId } = await approvedBy(d, body);
     const amount = BigInt(d.amount);
     const mint = address(d.mint);
-    const source = await chain.findSource(swishId, mint, amount);
+    const source = await chain.findSource(swishId, mint, amount, body.wallet ? address(body.wallet) : undefined);
     if (!source) {
-      throw new HttpError(402, "no_funds", "None of your linked wallets has enough USDC and allowance for this deposit");
+      throw new HttpError(
+        402,
+        "no_funds",
+        body.wallet
+          ? "That wallet does not have enough USDC and allowance for this deposit"
+          : "None of your linked wallets has enough USDC and allowance for this deposit",
+      );
     }
 
     const instructions = [

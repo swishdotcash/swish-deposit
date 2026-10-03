@@ -129,6 +129,22 @@ export async function linkWalletInstruction(
   };
 }
 
+/**
+ * Unlinks `wallet` from its Swish ID: deposits can no longer come from it.
+ * The wallet must sign; the link's rent goes back to whoever paid it.
+ */
+export async function unlinkWalletInstruction(
+  wallet: TransactionSigner,
+  swishId: Address,
+  rentPayer: Address,
+): Promise<Instruction> {
+  return {
+    programAddress: PROGRAM_ID,
+    accounts: [rs(wallet), w(await linkedWalletPda(wallet.address)), w(swishId), w(rentPayer)],
+    data: discriminator("unlink_wallet"),
+  };
+}
+
 export interface PullAccounts {
   payer: TransactionSigner;
   appId: Uint8Array;
@@ -209,3 +225,4 @@ export function computeUnitPrice(microLamports: bigint): Instruction {
 export const LINKED_WALLET_SIZE = 8 + 32 + 32 + 32 + 1;
 /** Offset of `swish_id` inside a LinkedWallet account. */
 export const LINKED_WALLET_SWISH_ID_OFFSET = 8 + 32;
+export const LINKED_WALLET_RENT_PAYER_OFFSET = LINKED_WALLET_SWISH_ID_OFFSET + 32;

@@ -6,7 +6,7 @@
  *   npx tsx scripts/e2e-devnet.ts --admin-keypair <path to the devnet admin>
  *
  * The admin (it registers the test app) also funds a throwaway sponsor with
- * 0.3 SOL. Everything else is created fresh: a test token standing in for
+ * 0.1 SOL. Everything else is created fresh: a test token standing in for
  * USDC, a user wallet (as Phantom would be), the user's account in the app.
  */
 import { randomBytes } from "node:crypto";
@@ -40,6 +40,7 @@ import {
 } from "@solana-program/token";
 
 import { createApp } from "../src/app.js";
+import { ensureLookupTable } from "../src/lookup.js";
 import { SolanaChain } from "../src/chain/client.js";
 import { b64url, fromB64url } from "../src/chain/webauthn.js";
 import { receiptPda, uuidBytes } from "../src/chain/program.js";
@@ -68,8 +69,8 @@ const userWallet = await generateKeyPairSigner();
 const userInApp = await generateKeyPairSigner();
 const chain = new SolanaChain(RPC, sponsor);
 
-step(`fund a throwaway sponsor ${sponsor.address} with 0.3 SOL from the admin`);
-console.log("  ", tx(await chain.sendAs(admin, [getTransferSolInstruction({ source: admin, destination: sponsor.address, amount: lamports(300_000_000n) })])));
+step(`fund a throwaway sponsor ${sponsor.address} with 0.1 SOL from the admin`);
+console.log("  ", tx(await chain.sendAs(admin, [getTransferSolInstruction({ source: admin, destination: sponsor.address, amount: lamports(100_000_000n) })])));
 
 step(`a test token standing in for USDC (${mint.address}), 100 to the user's wallet ${userWallet.address}`);
 const [userAta] = await findAssociatedTokenPda({ owner: userWallet.address, mint: mint.address, tokenProgram: TOKEN_PROGRAM_ADDRESS });
@@ -96,6 +97,8 @@ console.log(
 const pg = new PGlite();
 const db: Db = { query: (sql, params) => pg.query(sql, params) as never, exec: (sql) => pg.exec(sql) };
 await migrate(db);
+step("the sponsor's lookup table for deposits (keeps them under the transaction size limit)");
+console.log(`   ${await ensureLookupTable(db, chain, mint.address)}`);
 const webhooks: string[] = [];
 const server = createApp({
   db,
@@ -190,7 +193,8 @@ for (;;) {
 async function balance(owner: Address) {
   const [ata] = await findAssociatedTokenPda({ owner, mint: mint.address, tokenProgram: TOKEN_PROGRAM_ADDRESS });
   try {
-    return (await fetchToken(rpc, ata)).data.amount;
+    // "confirmed", like the sends: a finalized read can lag a deposit that just landed.
+    return (await fetchToken(rpc, ata, { commitment: "confirmed" })).data.amount;
   } catch {
     return 0n;
   }
@@ -198,7 +202,8 @@ async function balance(owner: Address) {
 
 async function faceId(d: Record<string, unknown>) {
   const c = await call(`/v1/deposits/${d.id}/challenge`, { client_secret: d.client_secret }, "widget");
-  const a = passkey.assert(fromB64url(String(c.challenge)));
+  // As Chrome at its largest: the transaction must still fit.
+  const a = passkey.assert(fromB64url(String(c.challenge)), { asChrome: true });
   return call(
     `/v1/deposits/${d.id}/submit`,
     {

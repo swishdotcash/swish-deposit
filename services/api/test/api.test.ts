@@ -45,8 +45,11 @@ class FakeChain implements Chain {
   async destinationFor(owner: Address, mint: Address) {
     return (await findAssociatedTokenPda({ owner, mint, tokenProgram: TOKEN_PROGRAM }))[0];
   }
-  async findSource() {
-    return this.source;
+  async findSource(_swishId: Address, _mint: Address, _amount: bigint, only?: Address) {
+    return this.source && (!only || only === this.source.wallet) ? this.source : null;
+  }
+  async linkedWallets() {
+    return this.source ? [this.source.wallet] : [];
   }
   async subscriptionAuthority() {
     return this.authority;
@@ -56,6 +59,9 @@ class FakeChain implements Chain {
   }
   async linkedSwishId() {
     return this.linkedTo;
+  }
+  async linkedWallet() {
+    return this.linkedTo ? { swishId: this.linkedTo, rentPayer: this.sponsor.address } : null;
   }
   /** Receipts on chain, by deposit id bytes (hex). */
   receipts = new Set<string>();
@@ -252,6 +258,47 @@ describe("one Face ID moves the money", () => {
     expect(hook.signature).toBe(signWebhook(w.keys.secretHash, t, hook.body));
   });
 
+  it("shows the wallets a deposit can come from, only against a Face ID approval of it", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit("12.5");
+    const c = await widget(`/v1/deposits/${d.id}/challenge`, { client_secret: d.client_secret });
+    const a = user.pk.assert(fromB64url(c.body.challenge));
+    const approval = {
+      client_secret: d.client_secret,
+      credential_id: user.credentialId,
+      authenticator_data: b64url(a.authenticatorData),
+      client_data_json: b64url(a.clientDataJson),
+      signature: b64url(a.signature),
+    };
+    w.chain.walletAllowances = [{ address: addr(50), nonce: 0n, subscriptionAuthority: addr(51), amount: 37_500_000n, expiryTs: 0n }];
+    const res = await widget(`/v1/deposits/${d.id}/sources`, approval);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ token: "USDC", wallets: [{ wallet: addr(30), balance: "1000", left: "37.5", enough: true }] });
+
+    // A limit below the deposit is shown as not enough.
+    w.chain.walletAllowances = [{ address: addr(50), nonce: 0n, subscriptionAuthority: addr(51), amount: 5_000_000n, expiryTs: 0n }];
+    const low = await widget(`/v1/deposits/${d.id}/sources`, approval);
+    expect(low.body.wallets[0]).toMatchObject({ left: "5", enough: false });
+
+    // No approval, or another deposit's approval: nothing.
+    const other = await createDeposit("12.5");
+    const oc = await widget(`/v1/deposits/${other.id}/challenge`, { client_secret: other.client_secret });
+    expect(oc.status).toBe(200);
+    const wrong = await widget(`/v1/deposits/${other.id}/sources`, { ...approval, client_secret: other.client_secret });
+    expect(wrong.status).toBe(400);
+    expect(wrong.body.error.code).toBe("passkey_rejected");
+    const none = await widget(`/v1/deposits/${d.id}/sources`, { client_secret: d.client_secret });
+    expect(none.status).toBe(400);
+
+    // Nothing moved, and the same approval still pays, from the wallet chosen.
+    expect(w.chain.sent).toHaveLength(0);
+    const refused = await widget(`/v1/deposits/${d.id}/submit`, { ...approval, wallet: addr(77) });
+    expect(refused.status).toBe(402);
+    const paid = await widget(`/v1/deposits/${d.id}/submit`, { ...approval, wallet: addr(30) });
+    expect(paid.status).toBe(200);
+    expect(paid.body).toMatchObject({ status: "succeeded", wallet: addr(30) });
+  });
+
   it("works once", async () => {
     const user = await setUpUser();
     const d = await createDeposit();
@@ -422,7 +469,7 @@ describe("setup", () => {
     w.chain.linkedTo = await swishIdPda(user.pk.publicKey);
     w.chain.walletAllowances = [{ address: addr(50), nonce: 0n, subscriptionAuthority: addr(51), amount: 37_500_000n, expiryTs: 0n }];
     const left = await widget("/v1/setup/wallet/allowance", { credential_id: user.credentialId, wallet: addr(40) });
-    expect(left.body).toMatchObject({ left: "37.5", token: "USDC" });
+    expect(left.body).toMatchObject({ left: "37.5", balance: "1000", token: "USDC" });
     const noDeposit = await widget("/v1/setup/wallet/limit", { credential_id: user.credentialId, wallet: addr(40), add: "100" });
     expect(noDeposit.status).toBe(400);
     const res = await limit();
@@ -436,6 +483,36 @@ describe("setup", () => {
     const create = Buffer.from(ixs![1]!.data!);
     expect(create.includes(Buffer.from(new BigUint64Array([137_500_000n]).buffer))).toBe(true);
     expect(create.includes(Buffer.from(new BigUint64Array([1n]).buffer))).toBe(true);
+  });
+
+  it("unlinks a wallet with one signature: cancels its limit and the link, rent back, no deposit needed", async () => {
+    const unlink = () => widget("/v1/setup/wallet/unlink", { wallet: addr(40) });
+    const notLinked = await unlink();
+    expect(notLinked.status).toBe(400);
+    expect(notLinked.body.error.code).toBe("not_linked");
+
+    w.chain.linkedTo = addr(41);
+    w.chain.walletAllowances = [{ address: addr(50), nonce: 0n, subscriptionAuthority: addr(51), amount: 37_500_000n, expiryTs: 0n }];
+    const res = await unlink();
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ done: false, step: "unlink" });
+    const [ixs] = w.chain.built;
+    expect(ixs).toHaveLength(2);
+    // the allowance is revoked first, its rent to Swish
+    expect(ixs![0]!.accounts!.map((a) => a.address)).toEqual(expect.arrayContaining([addr(50), w.chain.sponsor.address]));
+    // then our program unlinks: wallet signs, the Swish ID and the rent payer are named
+    expect(ixs![1]!.programAddress).toBe(PROGRAM_ID);
+    expect(ixs![1]!.accounts!.map((a) => a.address)).toEqual(
+      expect.arrayContaining([addr(40), addr(41), w.chain.sponsor.address]),
+    );
+
+    // It is sent like a setup step, without counting against any deposit.
+    const sent = await widget("/v1/setup/wallet/submit", { transaction: "AQID", token: res.body.token });
+    expect(sent.status).toBe(200);
+    expect(w.chain.walletSigned).toBe(1);
+    const forged = await widget("/v1/setup/wallet/submit", { transaction: "AQID", token: "unlink.forged" });
+    expect(forged.status).toBe(400);
+    expect(w.chain.walletSigned).toBe(1);
   });
 
   it("only signs back a transaction it prepared", async () => {
