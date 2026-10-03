@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Swish Deposit demo</title>
+    <style>
+      body {
+        margin: 0; padding: 48px 16px; background: #f0f0f0; color: #121212;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 420px; margin: 0 auto; }
+      h1 { font-size: 22px; margin: 0 0 4px; }
+      p { font-size: 14px; opacity: 0.7; margin: 0 0 24px; line-height: 1.45; }
+      label { display: block; font-size: 13px; font-weight: 600; margin: 14px 0 6px; }
+      input {
+        width: 100%; box-sizing: border-box; padding: 12px 14px; font: inherit; font-size: 15px;
+        border: 1px solid rgba(18, 18, 18, 0.15); border-radius: 12px; background: #fff;
+      }
+      button {
+        width: 100%; margin-top: 20px; padding: 14px 16px; font: inherit; font-size: 15px; font-weight: 600;
+        border: 0; border-radius: 14px; background: #121212; color: #fafafa; cursor: pointer;
+      }
+      button:disabled { opacity: 0.5; cursor: default; }
+      button.quiet { background: transparent; color: #121212; border: 1px solid rgba(18, 18, 18, 0.2); }
+      h2 { font-size: 16px; margin: 40px 0 4px; }
+      pre {
+        margin-top: 24px; padding: 14px; border-radius: 12px; background: #121212; color: #d8ffd8;
+        font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; min-height: 60px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Demo app</h1>
+      <p>A stand-in for an app that takes deposits with Swish. Its server creates the deposit; the widget does the rest.</p>
+      <form id="form">
+        <label for="amount">Amount (USDC)</label>
+        <input id="amount" inputmode="decimal" value="2" />
+        <label for="destination">Your address in this app (where the deposit lands)</label>
+        <input id="destination" placeholder="Solana address" autocomplete="off" />
+        <button id="go" type="submit">Deposit with Swish</button>
+      </form>
+      <pre id="log">What this app's server sees will show here.</pre>
+      <h2>Testing: start over</h2>
+      <p>
+        Unlinks a wallet from its Swish ID and cancels its limit, so the same wallet can go through setup again. The
+        wallet signs once. Delete the old passkey from your device yourself.
+      </p>
+      <label for="wallet">Wallet</label>
+      <input id="wallet" value="Phantom" />
+      <button id="reset" type="button" class="quiet">Reset this wallet</button>
+    </main>
+    <script type="module">
+      import { openDeposit, unlinkWallet } from "/widget.js";
+
+      const config = await (await fetch("/config")).json();
+      const log = (label, value) => {
+        document.getElementById("log").textContent = `${label}\n${JSON.stringify(value, null, 2)}`;
+      };
+      const destination = document.getElementById("destination");
+      destination.value = localStorage.getItem("demo-destination") ?? "";
+
+      document.getElementById("reset").addEventListener("click", async (e) => {
+        e.target.disabled = true;
+        try {
+          const address = await unlinkWallet({
+            publishableKey: config.publishableKey,
+            apiUrl: config.apiUrl,
+            cluster: config.cluster,
+            wallet: document.getElementById("wallet").value.trim(),
+          });
+          log("Unlinked. This wallet can be set up again:", { wallet: address });
+        } catch (err) {
+          log("Could not reset the wallet:", { message: err.message ?? String(err), code: err.code });
+        } finally {
+          e.target.disabled = false;
+        }
+      });
+
+      document.getElementById("form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const go = document.getElementById("go");
+        go.disabled = true;
+        try {
+          localStorage.setItem("demo-destination", destination.value.trim());
+          const created = await fetch("/deposits", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ amount: document.getElementById("amount").value.trim(), destination: destination.value.trim() }),
+          });
+          const deposit = await created.json();
+          if (!created.ok) return log("The server could not create the deposit:", deposit);
+          log("Server created the deposit:", { ...deposit, client_secret: "(given to the widget)" });
+
+          const outcome = await openDeposit({
+            publishableKey: config.publishableKey,
+            apiUrl: config.apiUrl,
+            cluster: config.cluster,
+            depositId: deposit.id,
+            clientSecret: deposit.client_secret,
+          });
+          const seen = await (await fetch(`/deposits/${deposit.id}`)).json();
+          log(`Widget closed (${outcome.status}). The server reads the deposit:`, seen);
+        } catch (err) {
+          log("Error:", String(err));
+        } finally {
+          go.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
