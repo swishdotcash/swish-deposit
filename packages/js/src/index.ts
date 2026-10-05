@@ -1,18 +1,25 @@
 /**
- * Swish Deposit for the browser.
+ * Swish Deposit for the browser: the button and the widget it opens.
  *
- *   const outcome = await openDeposit({
+ *   mountDepositButton("#deposit", {
  *     publishableKey: "swishpub_…",
- *     depositId,        // from your server: POST /v1/deposits with your secret key
- *     clientSecret,
+ *     // your server: POST /v1/deposits with your secret key
+ *     createDeposit: () => fetch("/deposits", { method: "POST" }).then((r) => r.json()),
+ *     onSuccess: (deposit) => …,
  *   });
- *   if (outcome.status === "succeeded") …
  *
- * The widget opens over your page in a frame served by Swish: the user's
- * passkey and wallet never touch your page. Your server learns the result
+ * With your own button, call `openDeposit({ publishableKey, depositId,
+ * clientSecret })` instead. Either way the widget opens over your page in a
+ * frame served by Swish: the user's passkey and wallet never touch your page. Your server learns the result
  * from the `deposit.succeeded` webhook; treat that, not the browser, as the
  * source of truth.
  */
+export {
+  mountDepositButton,
+  type CreatedDeposit,
+  type DepositButton,
+  type DepositButtonOptions,
+} from "./button.js";
 export {
   DEFAULT_FRAME_URL,
   knownWallet,

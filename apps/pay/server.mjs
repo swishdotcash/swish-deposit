@@ -26,6 +26,8 @@ createServer((req, res) => {
     "Content-Type": TYPES[extname(file)] ?? "application/octet-stream",
     "Cache-Control": hashed ? "public, max-age=31536000, immutable" : "no-cache",
     "X-Content-Type-Options": "nosniff",
+    // The button in an app's page is set in this font.
+    ...(path.startsWith("/fonts/") ? { "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400" } : {}),
   });
   createReadStream(file).pipe(res);
 }).listen(PORT, "::", () => console.log(`swish-deposit frame on :${PORT}`));

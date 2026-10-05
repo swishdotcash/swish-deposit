@@ -39,8 +39,8 @@
         <input id="amount" inputmode="decimal" value="2" />
         <label for="destination">Your address in this app (where the deposit lands)</label>
         <input id="destination" placeholder="Solana address" autocomplete="off" />
-        <button id="go" type="submit">Deposit with Swish</button>
       </form>
+      <div id="deposit" style="margin-top: 20px"></div>
       <pre id="log">What this app's server sees will show here.</pre>
       <h2>Testing: start over</h2>
       <p>
@@ -52,7 +52,7 @@
       <button id="reset" type="button" class="quiet">Reset this wallet</button>
     </main>
     <script type="module">
-      import { openDeposit, unlinkWallet } from "/widget.js";
+      import { mountDepositButton, unlinkWallet } from "/widget.js";
 
       const config = await (await fetch("/config")).json();
       const log = (label, value) => {
@@ -72,6 +72,7 @@
             wallet: document.getElementById("wallet").value.trim(),
           });
           log("Unlinked. This wallet can be set up again:", { wallet: address });
+          button.refresh();
         } catch (err) {
           log("Could not reset the wallet:", { message: err.message ?? String(err), code: err.code });
         } finally {
@@ -79,11 +80,16 @@
         }
       });
 
-      document.getElementById("form").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const go = document.getElementById("go");
-        go.disabled = true;
-        try {
+      document.getElementById("form").addEventListener("submit", (e) => e.preventDefault());
+
+      let last = null;
+      const button = mountDepositButton("#deposit", {
+        publishableKey: config.publishableKey,
+        apiUrl: config.apiUrl,
+        cluster: config.cluster,
+        frameUrl: config.frameUrl,
+        // The app's own server creates the deposit with its secret key.
+        createDeposit: async () => {
           localStorage.setItem("demo-destination", destination.value.trim());
           const created = await fetch("/deposits", {
             method: "POST",
@@ -91,24 +97,16 @@
             body: JSON.stringify({ amount: document.getElementById("amount").value.trim(), destination: destination.value.trim() }),
           });
           const deposit = await created.json();
-          if (!created.ok) return log("The server could not create the deposit:", deposit);
+          if (!created.ok) throw Object.assign(new Error("The server could not create the deposit"), { body: deposit });
           log("Server created the deposit:", { ...deposit, client_secret: "(given to the widget)" });
-
-          const outcome = await openDeposit({
-            publishableKey: config.publishableKey,
-            apiUrl: config.apiUrl,
-            cluster: config.cluster,
-            frameUrl: config.frameUrl,
-            depositId: deposit.id,
-            clientSecret: deposit.client_secret,
-          });
-          const seen = await (await fetch(`/deposits/${deposit.id}`)).json();
+          last = deposit.id;
+          return deposit;
+        },
+        onClose: async (outcome) => {
+          const seen = await (await fetch(`/deposits/${last}`)).json();
           log(`Widget closed (${outcome.status}). The server reads the deposit:`, seen);
-        } catch (err) {
-          log("Error:", String(err));
-        } finally {
-          go.disabled = false;
-        }
+        },
+        onError: (err) => log("Error:", err.body ?? String(err)),
       });
     </script>
   </body>
