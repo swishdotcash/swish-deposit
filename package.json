@@ -13,7 +13,8 @@
     "probe:foundation": "tsx scripts/probe-foundation.ts",
     "program:build": "cd programs/swish-deposit && cargo-build-sbf --tools-version v1.52 --sbf-out-dir ../../target/deploy && rm -f ../../target/deploy/swish_deposit-keypair.json",
     "program:test": "npm run program:build && cargo test -p swish-deposit",
-    "program:initialize": "tsx scripts/initialize.ts"
+    "program:initialize": "tsx scripts/initialize.ts",
+    "program:set-rp-id": "tsx scripts/set-rp-id.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

@@ -72,6 +72,11 @@ const cases: { name: string; screen: Screen; v: View }[] = [
     v: base,
   },
   {
+    name: "limit-over-balance",
+    screen: { name: "limit", purpose: "setup", wallet: WALLET, balance: "20", choices: ["250", "500", "1000"], minimum: "2" },
+    v: { ...base, details: { ...details, amount: "2" } },
+  },
+  {
     name: "limit-raise",
     screen: { name: "limit", purpose: "raise", wallet: WALLET, balance: "1284.4", left: "100", choices: ["250", "500", "1000"], minimum: "150" },
     v: known,

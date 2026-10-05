@@ -160,6 +160,8 @@ function Limit({ v, a, screen }: { v: View; a: Actions; screen: Extract<Screen, 
   // Setup: the limit itself. Adding: what is left now plus what is added.
   const limitAfter = raise ? left + Number(chosen || 0) : Number(chosen || 0);
   const leftAfter = Math.max(limitAfter - amount, 0);
+  // A limit is easier to judge as a number of deposits than against today's balance.
+  const covers = amount > 0 ? Math.floor(limitAfter / amount) : 0;
 
   const facts = [shortAddress(screen.wallet)];
   if (screen.balance !== undefined) facts.push(`${money(screen.balance)} USDC`);
@@ -212,6 +214,11 @@ function Limit({ v, a, screen }: { v: View; a: Actions; screen: Extract<Screen, 
               </span>
             </div>
             <LimitBar now={amount} rest={leftAfter} />
+            {covers > 0 && (
+              <p className="aside">
+                {covers === 1 ? "Covers this deposit" : `Covers ${covers.toLocaleString("en-US")} deposits like this one`}
+              </p>
+            )}
           </div>
         </div>
       )}

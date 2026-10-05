@@ -352,7 +352,7 @@ export class DepositFlow {
       this.credentialId = created.credentialId;
     } catch (e) {
       if (e instanceof PasskeyDismissed) {
-        return this.show({ name: "passkey", note: "The passkey was not created. Try again." });
+        return this.show({ name: "passkey", note: "The passkey was not created. If a password manager opened, save the passkey there or pick its option to use this device, then try again." });
       }
       return this.fail(e, () => this.show({ name: "passkey" }));
     }

@@ -390,6 +390,9 @@ body,
   font-size: 15px;
   line-height: 20px;
 }
+.other input:focus-visible {
+  outline: 0;
+}
 .other input::placeholder {
   color: color-mix(in srgb, var(--fg) 45%, transparent);
 }
@@ -446,6 +449,12 @@ body,
 }
 .bar i.used {
   background: color-mix(in srgb, var(--fg) 30%, transparent);
+}
+.aside {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--fg) 55%, transparent);
 }
 .source {
   display: flex;
