@@ -28,6 +28,8 @@ const required = (name: string) => {
 const PORT = Number(process.env.PORT ?? 5173);
 const API_URL = (process.env.SWISH_API_URL ?? "http://localhost:4100").replace(/\/+$/, "");
 const CLUSTER = process.env.SWISH_CLUSTER ?? "devnet";
+// The Swish frame: `npm run dev -w @swish-deposit/pay` serves it locally.
+const FRAME_URL = (process.env.SWISH_FRAME_URL ?? "http://localhost:5174").replace(/\/+$/, "");
 const PUBLISHABLE_KEY = required("SWISH_PUBLISHABLE_KEY");
 const SECRET_KEY = required("SWISH_SECRET_KEY");
 
@@ -91,7 +93,7 @@ createServer(async (req, res) => {
       return res.end(await widget());
     }
     if (req.method === "GET" && url.pathname === "/config") {
-      return json(res, 200, { publishableKey: PUBLISHABLE_KEY, apiUrl: API_URL, cluster: CLUSTER });
+      return json(res, 200, { publishableKey: PUBLISHABLE_KEY, apiUrl: API_URL, cluster: CLUSTER, frameUrl: FRAME_URL });
     }
     if (req.method === "POST" && url.pathname === "/deposits") {
       const { amount, destination } = await readJson(req);

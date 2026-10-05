@@ -68,6 +68,7 @@
             publishableKey: config.publishableKey,
             apiUrl: config.apiUrl,
             cluster: config.cluster,
+            frameUrl: config.frameUrl,
             wallet: document.getElementById("wallet").value.trim(),
           });
           log("Unlinked. This wallet can be set up again:", { wallet: address });
@@ -97,6 +98,7 @@
             publishableKey: config.publishableKey,
             apiUrl: config.apiUrl,
             cluster: config.cluster,
+            frameUrl: config.frameUrl,
             depositId: deposit.id,
             clientSecret: deposit.client_secret,
           });

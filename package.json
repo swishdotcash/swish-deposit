@@ -6,7 +6,8 @@
   "description": "Swish Deposit: one-tap, passkey-authorised deposits into any Solana app.",
   "workspaces": [
     "packages/*",
-    "services/*"
+    "services/*",
+    "apps/*"
   ],
   "scripts": {
     "probe:foundation": "tsx scripts/probe-foundation.ts",

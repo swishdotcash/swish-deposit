@@ -19,6 +19,7 @@ import { signWebhook } from "../src/webhooks.js";
 import { fakePasskey } from "./helpers.js";
 
 const ORIGIN = "https://app.example.com";
+const FRAME = "https://pay.example.com";
 const addr = (n: number) => getAddressDecoder().decode(new Uint8Array(32).fill(n));
 const USDC = addr(9);
 const USER_IN_APP = addr(20);
@@ -125,6 +126,7 @@ async function world(): Promise<World> {
     rpId: "localhost",
     usdcMint: USDC,
     serverSecret: Buffer.alloc(32, 7),
+    frameOrigins: [FRAME],
     fetch: (async (url: string, init: RequestInit) => {
       webhooks.push({ url, body: String(init.body), signature: String((init.headers as Record<string, string>)["swish-signature"]) });
       return new Response(null, { status: 200 });
@@ -224,6 +226,19 @@ describe("the widget", () => {
     expect(ok.status).toBe(200);
     expect(ok.headers["access-control-allow-origin"]).toBe(ORIGIN);
     expect(ok.body).toMatchObject({ rp_id: "localhost", amount: "12.5", token: "USDC", app: { name: "Demo" } });
+  });
+
+  it("is let in from the Swish frame only for a page the app registered", async () => {
+    const d = await createDeposit();
+    const fromFrame = (page?: string) => {
+      const req = request(w.api).post(`/v1/deposits/${d.id}/challenge`).set("x-swish-key", w.keys.publishable).set("origin", FRAME);
+      return (page ? req.set("x-swish-app-origin", page) : req).send({ client_secret: d.client_secret });
+    };
+    expect((await fromFrame()).status).toBe(403);
+    expect((await fromFrame("https://evil.example")).status).toBe(403);
+    const ok = await fromFrame(ORIGIN);
+    expect(ok.status).toBe(200);
+    expect(ok.headers["access-control-allow-origin"]).toBe(FRAME);
   });
 
   it("answers the browser's preflight", async () => {

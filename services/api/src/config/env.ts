@@ -10,6 +10,11 @@ const envSchema = z.object({
   USDC_MINT: z.string().min(32),
   RP_ID: z.string().min(1),
   SERVER_SECRET: z.string().regex(/^[0-9a-f]{64,}$/i, "32+ random bytes as hex"),
+  /** Comma-separated, e.g. "https://pay.swish.cash". */
+  FRAME_ORIGINS: z
+    .string()
+    .default("")
+    .transform((s) => s.split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean)),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -27,7 +27,8 @@ export function requireSecretKey(deps: Deps): RequestHandler {
 
 /**
  * From the widget in a browser: `X-Swish-Key: swishpub_…`, and the page's
- * origin must be one the app registered.
+ * origin must be one the app registered. The widget runs in a Swish frame,
+ * which names the page it was opened from in `X-Swish-App-Origin`.
  */
 export function requirePublishableKey(deps: Deps): RequestHandler {
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -38,8 +39,9 @@ export function requirePublishableKey(deps: Deps): RequestHandler {
     if (!app) throw unauthorized("unknown publishable key");
     if (!app.active) throw new HttpError(403, "app_inactive", "this app is switched off");
     const origin = req.get("origin");
-    if (origin && !app.allowed_origins.includes(origin)) {
-      throw new HttpError(403, "origin_not_allowed", `${origin} is not an allowed origin for this app`);
+    const page = origin && deps.frameOrigins.includes(origin) ? (req.get("x-swish-app-origin") ?? "") : origin;
+    if (page !== undefined && !app.allowed_origins.includes(page)) {
+      throw new HttpError(403, "origin_not_allowed", `${page || "this page"} is not an allowed origin for this app`);
     }
     if (origin) res.set("Access-Control-Allow-Origin", origin).set("Vary", "Origin");
     res.locals.app = app;
@@ -56,7 +58,7 @@ export const corsPreflight: RequestHandler = (req, res, next) => {
   res
     .set("Access-Control-Allow-Origin", req.get("origin") ?? "*")
     .set("Access-Control-Allow-Methods", "GET, POST")
-    .set("Access-Control-Allow-Headers", "Content-Type, X-Swish-Key")
+    .set("Access-Control-Allow-Headers", "Content-Type, X-Swish-Key, X-Swish-App-Origin")
     .set("Access-Control-Max-Age", "600")
     .set("Vary", "Origin")
     .status(204)

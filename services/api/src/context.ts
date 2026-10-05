@@ -11,6 +11,8 @@ export interface Deps {
   usdcMint: Address;
   /** Signs the setup transactions we hand out, so only ours come back. */
   serverSecret: Buffer;
+  /** Where Swish serves the widget's frame. The frame calls us for the app's page. */
+  frameOrigins: string[];
   /** Sends webhooks. Injected so tests can watch them. */
   fetch: typeof fetch;
 }

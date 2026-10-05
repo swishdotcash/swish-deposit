@@ -106,6 +106,7 @@ const server = createApp({
   rpId: "localhost",
   usdcMint: mint.address,
   serverSecret: randomBytes(32),
+  frameOrigins: [],
   fetch: (async (_url: string, init: RequestInit) => {
     webhooks.push(String(init.body));
     return new Response(null, { status: 200 });

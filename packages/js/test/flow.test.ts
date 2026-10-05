@@ -9,7 +9,7 @@ import {
   type SetupStep,
   type WalletChoice,
 } from "../src/api.js";
-import { money, unlockName } from "../src/drawer.js";
+import { money, unlockName } from "../src/format.js";
 import { fromBase64, fromBase64Url, toBase64, toBase64Url } from "../src/encoding.js";
 import { DepositFlow, limitChoices, type Screen } from "../src/flow.js";
 import { PasskeyDismissed, PasskeyUnsupported, type Passkeys } from "../src/passkey.js";

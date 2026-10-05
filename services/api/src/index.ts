@@ -20,6 +20,7 @@ const app = createApp({
   rpId: env.RP_ID,
   usdcMint: address(env.USDC_MINT),
   serverSecret: Buffer.from(env.SERVER_SECRET, "hex"),
+  frameOrigins: env.FRAME_ORIGINS,
   fetch,
 });
 

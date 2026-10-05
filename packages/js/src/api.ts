@@ -94,7 +94,8 @@ export interface DepositApi {
 
 export const DEFAULT_API_URL = "https://api.swish.cash";
 
-export function createApi(publishableKey: string, apiUrl: string = DEFAULT_API_URL): DepositApi {
+/** `appOrigin`: set by the Swish frame, naming the app page that opened it. */
+export function createApi(publishableKey: string, apiUrl: string = DEFAULT_API_URL, appOrigin?: string): DepositApi {
   const base = apiUrl.replace(/\/+$/, "");
 
   async function post<T>(path: string, body: unknown): Promise<T> {
@@ -102,7 +103,11 @@ export function createApi(publishableKey: string, apiUrl: string = DEFAULT_API_U
     try {
       res = await fetch(base + path, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Swish-Key": publishableKey },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Swish-Key": publishableKey,
+          ...(appOrigin ? { "X-Swish-App-Origin": appOrigin } : {}),
+        },
         body: JSON.stringify(body),
       });
     } catch {
