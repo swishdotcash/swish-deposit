@@ -52,8 +52,10 @@ async function swish(path: string, body?: unknown): Promise<{ status: number; bo
   return { status: res.status, body: await res.json() };
 }
 
-/** The widget, bundled from source on every load so edits show on refresh. */
-async function widget(): Promise<string> {
+const HOSTED = process.env.NODE_ENV === "production";
+let bundled: Promise<string> | undefined;
+
+async function bundle(): Promise<string> {
   const out = await build({
     entryPoints: [join(here, "../src/index.ts")],
     bundle: true,
@@ -62,6 +64,19 @@ async function widget(): Promise<string> {
     write: false,
   });
   return out.outputFiles[0]!.text;
+}
+
+/**
+ * The widget, bundled from source: on every load locally so edits show on
+ * refresh, once when hosted.
+ */
+function widget(): Promise<string> {
+  if (!HOSTED) return bundle();
+  bundled ??= bundle().catch((e) => {
+    bundled = undefined;
+    throw e;
+  });
+  return bundled;
 }
 
 createServer(async (req, res) => {
