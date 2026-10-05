@@ -571,7 +571,7 @@ describe("a first-time user", () => {
     await w.flow.pickWallet("Phantom");
     await w.flow.chooseLimit("100");
     await w.flow.createPasskey();
-    expect(w.flow.screen).toMatchObject({ name: "passkey", note: "The passkey was not created. If a password manager opened, save the passkey there or pick its option to use this device, then try again." });
+    expect(w.flow.screen).toMatchObject({ name: "passkey", note: "The passkey was not created. Try again." });
     w.flow.dispose();
   });
 

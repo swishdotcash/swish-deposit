@@ -13,6 +13,7 @@ import { fromBase64, toBase64 } from "core/encoding";
 import { DepositFlow } from "core/flow";
 import { browserMemory } from "core/memory";
 import { browserPasskeys } from "core/passkey";
+import { windowPasskeys } from "core/passkeyWindow";
 import { isMessage, type FromFrame, type ToFrame } from "core/protocol";
 import { browserWallets } from "core/wallet";
 
@@ -26,12 +27,14 @@ const tell = (message: FromFrame, page: string) => window.parent.postMessage(mes
 
 function open(m: Extract<ToFrame, { swish: "open" }>, page: string) {
   session?.flow.dispose();
+  const theme = m.theme === "dark" ? "dark" : "light";
   const flow = new DepositFlow(
     { id: m.depositId, clientSecret: m.clientSecret },
     {
       // The API lets this frame in only for a page the app registered.
       api: createApi(m.publishableKey, m.apiUrl, page),
-      passkeys: browserPasskeys(),
+      // A new passkey is made in a window of our own; deposits are approved here.
+      passkeys: windowPasskeys(browserPasskeys(), `${location.origin}/passkey.html`, theme),
       wallets: browserWallets(m.cluster),
       memory,
     },
@@ -39,7 +42,7 @@ function open(m: Extract<ToFrame, { swish: "open" }>, page: string) {
   flow.onChange((screen) => {
     if (screen.name === "succeeded") tell({ swish: "succeeded", deposit: screen.result }, page);
   });
-  session = { flow, cluster: m.cluster, theme: m.theme === "dark" ? "dark" : "light", page };
+  session = { flow, cluster: m.cluster, theme, page };
   root.render(
     <App
       key={m.depositId}

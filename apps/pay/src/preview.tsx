@@ -3,10 +3,13 @@
  * checking against the design. Open the frame's address directly;
  * `?theme=dark` for dark, `?only=confirm` for one screen.
  */
+import { useState } from "react";
 import type { Root } from "react-dom/client";
 
 import type { Challenge } from "core/api";
 import type { Screen } from "core/flow";
+import { browserPasskeys } from "core/passkey";
+import { windowPasskeys } from "core/passkeyWindow";
 
 import { ScreenBody, type Actions, type View } from "./screens";
 import { TopBar } from "./ui";
@@ -114,8 +117,63 @@ const cases: { name: string; screen: Screen; v: View }[] = [
   { name: "loading", screen: { name: "loading" }, v: { ...base, details: null } },
 ];
 
+/** `?try=passkey`: creates a passkey for this site the way the widget does: in the page first, in the window on a second try. */
+const tryPasskeys = windowPasskeys(browserPasskeys(), `${location.origin}/passkey.html`, "light");
+
+function TryPasskeyWindow() {
+  const [result, setResult] = useState("");
+  const run = () => {
+    setResult("waiting");
+    tryPasskeys
+      .create(location.hostname)
+      .then(
+        (p) => setResult(`created ${p.credentialId.slice(0, 10)}… (public key ${p.publicKey.length} chars)`),
+        (e: unknown) => setResult(`not created: ${e instanceof Error ? e.constructor.name : String(e)}`),
+      );
+  };
+  // The same request Blink's page makes (its options, this site), to see whether a password manager treats it differently.
+  const likeBlink = () => {
+    setResult("waiting");
+    const random = (n: number) => crypto.getRandomValues(new Uint8Array(n));
+    navigator.credentials
+      .create({
+        publicKey: {
+          rp: { id: location.hostname, name: "Swish" },
+          user: { id: random(16), name: "Swish", displayName: "Swish" },
+          challenge: random(32),
+          pubKeyCredParams: [
+            { alg: -8, type: "public-key" },
+            { alg: -7, type: "public-key" },
+            { alg: -257, type: "public-key" },
+          ],
+          timeout: 60000,
+          excludeCredentials: [],
+          authenticatorSelection: { requireResidentKey: true, residentKey: "required", userVerification: "required" },
+          attestation: "direct",
+          extensions: { credProps: true },
+        },
+      })
+      .then(
+        (c) => setResult(c ? `created ${(c as PublicKeyCredential).id.slice(0, 10)}…` : "nothing came back"),
+        (e: unknown) => setResult(`not created: ${e instanceof Error ? e.name : String(e)}`),
+      );
+  };
+  return (
+    <div style={{ padding: 32, font: "15px system-ui" }}>
+      <button id="try" onClick={run} style={{ font: "inherit", padding: "10px 16px" }}>
+        Create passkey
+      </button>{" "}
+      <button id="like-blink" onClick={likeBlink} style={{ font: "inherit", padding: "10px 16px" }}>
+        Create with Blink's exact request
+      </button>
+      <p id="result">{result}</p>
+    </div>
+  );
+}
+
 export function preview(root: Root) {
   const query = new URLSearchParams(location.search);
+  if (query.get("try") === "passkey") return root.render(<TryPasskeyWindow />);
   const theme = query.get("theme") === "dark" ? "dark" : "light";
   const only = query.get("only");
   document.body.style.background = theme === "dark" ? "#0b0b0b" : "#e9e9e9";
