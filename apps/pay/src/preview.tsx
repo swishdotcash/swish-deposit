@@ -117,7 +117,7 @@ const cases: { name: string; screen: Screen; v: View }[] = [
   { name: "loading", screen: { name: "loading" }, v: { ...base, details: null } },
 ];
 
-/** `?try=passkey`: creates a passkey for this site the way the widget does: in the Swish window. */
+/** `?try=passkey`: creates a passkey for this site the way the widget does: in the page first, in the window on a second try. */
 const tryPasskeys = windowPasskeys(browserPasskeys(), `${location.origin}/passkey.html`, "light");
 
 function TryPasskeyWindow() {
