@@ -1,5 +1,5 @@
-// The playground's server: serves the built page (dist/) and plays the part of
-// the demo app's own backend. It holds the secret key, creates deposits, and
+// The demo's server: serves the built page (dist/) and plays the part of
+// the pretend app's own backend. It holds the secret key, creates deposits, and
 // tells the page what it sees, including the webhook Swish sends.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
@@ -183,7 +183,7 @@ createServer(async (req, res) => {
     });
     createReadStream(file).pipe(res);
   } catch (e) {
-    console.error("[playground]", e);
+    console.error("[demo]", e);
     json(res, 500, { error: { code: "internal", message: "Something went wrong" } });
   }
-}).listen(PORT, "::", () => console.log(`swish-deposit playground on :${PORT} → ${API_URL} (${CLUSTER})`));
+}).listen(PORT, "::", () => console.log(`swish-deposit demo on :${PORT} → ${API_URL} (${CLUSTER})`));

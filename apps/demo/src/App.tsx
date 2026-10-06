@@ -193,7 +193,7 @@ export function App({ config }: { config: Config }) {
         <div className="brand">
           <Logo className="brand-logo" />
           <span className="brand-name">Swish Deposit</span>
-          <span className="tag">Playground</span>
+          <span className="tag">Demo</span>
         </div>
         <nav className="links">
           <span className="network">

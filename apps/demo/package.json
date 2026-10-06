@@ -1,9 +1,9 @@
 {
-  "name": "@swish-deposit/playground",
+  "name": "@swish-deposit/demo",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The Swish Deposit playground: a demo app with the real button, and what its server sees (demo.swish.cash).",
+  "description": "The Swish Deposit demo: a pretend app with the real button, and what its server sees (demo.swish.cash).",
   "scripts": {
     "dev": "vite",
     "dev:server": "node server.mjs",
