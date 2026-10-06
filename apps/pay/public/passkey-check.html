@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- A test page, not part of the deposit flow: asks this browser for a passkey
+     in a few ways and prints exactly what the browser answered. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Swish passkey check</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 20px; color: #111; background: #fff; }
+      button { font: inherit; padding: 10px 14px; margin: 0 0 8px; display: block; width: 100%; text-align: left; cursor: pointer; }
+      pre { white-space: pre-wrap; word-break: break-word; background: #f3f3f3; padding: 12px; border-radius: 8px; min-height: 120px; }
+    </style>
+  </head>
+  <body>
+    <p id="where"></p>
+    <div id="buttons"></div>
+    <pre id="log"></pre>
+    <script>
+      const host = location.hostname;
+      // swish.cash for pay.swish.cash; the host itself where there is no parent domain.
+      const parent = host.split(".").length > 2 ? host.split(".").slice(1).join(".") : host;
+      const embedded = window.top !== window;
+      document.getElementById("where").textContent =
+        (embedded ? "Embedded in another page" : "Opened on its own") + " · " + location.origin;
+
+      const log = document.getElementById("log");
+      const say = (line) => (log.textContent += line + "\n");
+      const random = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+      const create = (rpId) =>
+        navigator.credentials.create({
+          publicKey: {
+            rp: { id: rpId, name: "Swish" },
+            user: { id: random(16), name: "Swish check", displayName: "Swish check" },
+            challenge: random(32),
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: { residentKey: "required", userVerification: "required" },
+            attestation: "none",
+          },
+        });
+      const approve = (rpId) =>
+        navigator.credentials.get({
+          publicKey: { challenge: random(32), rpId, userVerification: "required", allowCredentials: [] },
+        });
+
+      const tests = [
+        ["Create a passkey for " + parent, () => create(parent)],
+        ...(parent === host ? [] : [["Create a passkey for " + host, () => create(host)]]),
+        ["Approve with a " + parent + " passkey", () => approve(parent)],
+      ];
+      tests.forEach(([label, run], i) => {
+        const b = document.createElement("button");
+        b.textContent = i + 1 + ". " + label;
+        b.onclick = () => {
+          const started = performance.now();
+          const took = () => ((performance.now() - started) / 1000).toFixed(1) + " s";
+          say(i + 1 + ". asked");
+          run().then(
+            (c) => say(i + 1 + ". " + (c ? "OK" : "nothing came back") + " after " + took()),
+            (e) =>
+              say(
+                i + 1 + ". REFUSED after " + took() + ": " + e.name + ": " + e.message +
+                  " (tap still fresh: " + navigator.userActivation.isActive + ")",
+              ),
+          );
+        };
+        document.getElementById("buttons").appendChild(b);
+      });
+    </script>
+  </body>
+</html>
