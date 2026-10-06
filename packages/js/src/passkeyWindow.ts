@@ -1,9 +1,9 @@
 /**
- * Creating a passkey in a small Swish window when it could not be created
- * inside the frame. A frame on someone else's page may only ask for a new
- * passkey within a few seconds of a tap; anything that opens first (a
- * password manager, say) uses that time up, and the browser then refuses. A
- * window of our own has no such limit. Approving a deposit stays in the frame.
+ * Creating a passkey in a small Swish window instead of inside the frame. A
+ * frame on someone else's page may only ask for a new passkey within a few
+ * seconds of a tap; anything that opens first (a password manager, say) uses
+ * that time up, and the browser then refuses. A window of our own has no such
+ * limit. Approving a deposit stays in the frame.
  */
 import { PasskeyDismissed, PasskeyUnsupported, type NewPasskey, type Passkeys } from "./passkey.js";
 import type { Theme } from "./protocol.js";
@@ -17,22 +17,15 @@ const WIDTH = 420;
 const HEIGHT = 560;
 
 /**
- * `inFrame` approves deposits and makes the first attempt at a new passkey.
- * If that attempt comes to nothing, the next one opens the window.
+ * `inFrame` approves deposits. A new passkey is made in the window; `inFrame`
+ * makes it only when the browser will not open one.
  */
 export function windowPasskeys(inFrame: Passkeys, pageUrl: string, theme: Theme): Passkeys {
-  let useWindow = false;
   return {
     approve: (challenge, rpId) => inFrame.approve(challenge, rpId),
 
     // Call straight from a tap: browsers only open a window then.
     create(rpId) {
-      if (!useWindow) {
-        return inFrame.create(rpId).catch((e: unknown) => {
-          if (e instanceof PasskeyDismissed) useWindow = true;
-          throw e;
-        });
-      }
       const nonce = crypto.randomUUID();
       const url = `${pageUrl}?${new URLSearchParams({ rp: rpId, nonce, theme })}`;
       const left = Math.max(window.screenX + (window.outerWidth - WIDTH) / 2, 0);
