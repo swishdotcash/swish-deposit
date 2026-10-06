@@ -18,6 +18,9 @@ export interface Session {
 /** Closing here would abandon something the wallet or the chain is doing. */
 const LOCKED = new Set<Screen["name"]>(["sending", "signing"]);
 
+/** How long the widget takes to leave; matches the closing animations in styles.css. */
+const CLOSE_MS = 200;
+
 export function App({ session, onClose }: { session: Session; onClose: (deposit: DepositResult | null) => void }) {
   const { flow, cluster, theme } = session;
   const [screen, setScreen] = useState<Screen>(flow.screen);
@@ -40,10 +43,17 @@ export function App({ session, onClose }: { session: Session; onClose: (deposit:
   const unlock = unlockName();
   const locked = LOCKED.has(screen.name);
 
+  // The widget leaves the way it came: it fades and settles before the page gets its screen back.
+  const [closing, setClosing] = useState(false);
+  const leaving = useRef(false);
   const close = () => {
-    if (locked) return;
+    if (LOCKED.has(flow.screen.name) || leaving.current) return;
     const last = flow.screen;
-    onClose(last.name === "succeeded" ? last.result : null);
+    const result = last.name === "succeeded" ? last.result : null;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return onClose(result);
+    leaving.current = true;
+    setClosing(true);
+    setTimeout(() => onClose(result), CLOSE_MS);
   };
 
   useEffect(() => {
@@ -92,7 +102,7 @@ export function App({ session, onClose }: { session: Session; onClose: (deposit:
   };
 
   return (
-    <div className="swish" data-theme={theme} onMouseDown={(e) => e.target === e.currentTarget && close()}>
+    <div className="swish" data-theme={theme} data-closing={closing || undefined} onMouseDown={(e) => e.target === e.currentTarget && close()}>
       <div className="card" role="dialog" aria-modal="true" aria-label="Swish Deposit">
         <TopBar onClose={close} locked={locked} />
         <ScreenBody screen={shown.current} v={view} a={actions} />

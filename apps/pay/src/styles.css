@@ -34,7 +34,11 @@ body,
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  animation: fade 0.16s ease-out;
+  animation: fade 0.24s ease-out both;
+}
+.swish[data-closing] {
+  animation: fade-out 0.2s ease-in forwards;
+  pointer-events: none;
 }
 
 .swish[data-theme="dark"] {
@@ -90,7 +94,10 @@ body,
   font-size: 12px;
   line-height: 16px;
   overflow-wrap: anywhere;
-  animation: rise 0.2s ease-out;
+  animation: rise 0.36s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.swish[data-closing] .card {
+  animation: settle 0.2s ease-in forwards;
 }
 
 /* On a phone the widget is a sheet at the bottom of the app. */
@@ -108,6 +115,10 @@ body,
     box-shadow: none;
     flex: 0 1 auto;
     margin-top: auto;
+    animation: sheet-up 0.4s cubic-bezier(0.32, 0.72, 0, 1) both;
+  }
+  .swish[data-closing] .card {
+    animation: sheet-down 0.2s ease-in forwards;
   }
 }
 
@@ -116,10 +127,31 @@ body,
     opacity: 0;
   }
 }
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(16px) scale(0.97);
+  }
+}
+@keyframes settle {
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes sheet-down {
+  to {
+    transform: translateY(100%);
   }
 }
 @keyframes spin {
@@ -129,7 +161,9 @@ body,
 }
 @media (prefers-reduced-motion: reduce) {
   .swish,
-  .card {
+  .card,
+  .swish[data-closing],
+  .swish[data-closing] .card {
     animation: none;
   }
 }
