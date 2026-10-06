@@ -9,6 +9,8 @@
     "start": "tsx src/index.ts",
     "migrate": "tsx src/migrate.ts",
     "register-app": "tsx scripts/register-app.ts",
+    "add-origin": "tsx scripts/add-origin.ts",
+    "set-webhook": "tsx scripts/set-webhook.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
