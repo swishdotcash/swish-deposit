@@ -29,16 +29,20 @@ import {
   type KeyPairSigner,
   type Rpc,
   type RpcTransport,
+  type Signature,
   type SolanaRpcApi,
   type Transaction,
   type TransactionSigner,
 } from "@solana/kit";
 import { fetchMaybeToken, findAssociatedTokenPda } from "@solana-program/token";
 import {
+  SUBSCRIPTIONS_PROGRAM_ADDRESS,
   fetchAllMaybeFixedDelegation,
   fetchMaybeSubscriptionAuthority,
   findFixedDelegationPda,
   findSubscriptionAuthorityPda,
+  getCreateFixedDelegationDiscriminatorBytes,
+  getCreateFixedDelegationInstructionDataDecoder,
 } from "@solana/subscriptions";
 
 import {
@@ -84,6 +88,17 @@ export interface Allowance {
  */
 export const MAX_ALLOWANCE_NONCE = 32n;
 
+/** How many of an allowance's past transactions are read at a time when looking for its creation. */
+const LIMIT_READS_AT_ONCE = 6;
+
+/** The limit an allowance was created with, and how far its history has been read. */
+export interface LimitSet {
+  /** The newest signature in what was read; null when there was nothing new. */
+  newest: string | null;
+  /** Null when no creation is in what was read. */
+  amount: bigint | null;
+}
+
 /** A transaction for a wallet to sign, and the bytes its signature covers. */
 export interface WalletTransaction {
   wire: Uint8Array;
@@ -109,6 +124,12 @@ export interface Chain {
   linkedWallets(swishId: Address): Promise<Address[]>;
   /** The wallet's allowances naming our puller for this mint (normally one). */
   allowances(wallet: Address, mint: Address): Promise<Allowance[]>;
+  /**
+   * The limit an allowance was created with, from its history (the account
+   * only keeps what is left). `after` is the newest signature already read:
+   * only what came later is looked at.
+   */
+  limitSet(allowance: Address, after?: string): Promise<LimitSet>;
   /** The Swish ID a wallet is linked to, if any. */
   linkedSwishId(wallet: Address): Promise<Address | null>;
   /** A wallet's link: its Swish ID and who paid the link's rent. */
@@ -265,6 +286,42 @@ export class SolanaChain implements Chain {
       })
       .send();
     return linked.map(({ account }) => getAddressDecoder().decode(getBase64Encoder().encode(account.data[0]).subarray(8, 40)));
+  }
+
+  async limitSet(allowance: Address, after?: string): Promise<LimitSet> {
+    const history = await this.rpc
+      .getSignaturesForAddress(allowance, { limit: 1000, ...(after ? { until: after as Signature } : {}) })
+      .send();
+    const newest = history[0]?.signature ?? null;
+    const landed = history.filter((h) => h.err === null);
+    // Newest first, a few at a time: the creation is one deposit back for each deposit since.
+    for (let i = 0; i < landed.length; i += LIMIT_READS_AT_ONCE) {
+      const amounts = await Promise.all(
+        landed.slice(i, i + LIMIT_READS_AT_ONCE).map((h) => this.createdWith(allowance, h.signature)),
+      );
+      const amount = amounts.find((a) => a !== null);
+      if (amount !== undefined) return { newest, amount };
+    }
+    return { newest, amount: null };
+  }
+
+  /** The amount this transaction created `allowance` with; null when it did not create it. */
+  private async createdWith(allowance: Address, signature: Signature): Promise<bigint | null> {
+    const tx = await this.rpc.getTransaction(signature, { encoding: "json", maxSupportedTransactionVersion: 0 }).send();
+    if (!tx) return null;
+    const { message } = tx.transaction;
+    const loaded = tx.meta?.loadedAddresses;
+    const keys = [...message.accountKeys, ...(loaded?.writable ?? []), ...(loaded?.readonly ?? [])];
+    const created = getCreateFixedDelegationDiscriminatorBytes();
+    for (const ix of message.instructions) {
+      if (keys[ix.programIdIndex] !== SUBSCRIPTIONS_PROGRAM_ADDRESS) continue;
+      // Changing a limit revokes one allowance and creates another in one transaction: only ours counts.
+      if (!ix.accounts.some((i) => keys[i] === allowance)) continue;
+      const data = getBase58Encoder().encode(ix.data);
+      if (!created.every((byte, i) => data[i] === byte)) continue;
+      return getCreateFixedDelegationInstructionDataDecoder().decode(data).fixedDelegation.amount;
+    }
+    return null;
   }
 
   async allowances(wallet: Address, mint: Address): Promise<Allowance[]> {

@@ -54,7 +54,7 @@ const base: View = {
   walletName: "Phantom",
   chosenLimit: "1000",
 };
-const known: View = { ...base, wallet: WALLET, source: { wallet: WALLET, balance: "1284.4", left: "750" } };
+const known: View = { ...base, wallet: WALLET, source: { wallet: WALLET, balance: "1284.4", left: "750", limit: "1000" } };
 const icon =
   "data:image/svg+xml," +
   encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><rect width="36" height="36" rx="10" fill="#ab9ff2"/></svg>');
@@ -91,6 +91,8 @@ const cases: { name: string; screen: Screen; v: View }[] = [
   { name: "confirm-waiting", screen: { name: "confirm" }, v: { ...known, busy: "Waiting for Face ID" } },
   { name: "confirm-cancelled", screen: { name: "confirm", cancelled: true }, v: known },
   { name: "confirm-limit-low", screen: { name: "confirm" }, v: { ...known, source: { wallet: WALLET, balance: "1284.4", left: "100" } } },
+  { name: "confirm-balance-low", screen: { name: "confirm" }, v: { ...known, source: { wallet: WALLET, balance: "0", left: "750", limit: "1000" } } },
+  { name: "confirm-both-low", screen: { name: "confirm" }, v: { ...known, source: { wallet: WALLET, balance: "0", left: "20", limit: "100" } } },
   { name: "confirm-reading", screen: { name: "confirm" }, v: { ...known, source: null, sourcePending: true } },
   {
     name: "pay-from",

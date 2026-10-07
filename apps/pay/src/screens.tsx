@@ -287,10 +287,11 @@ function Confirm(props: { v: View; a: Actions; line: string; fine: string; note?
     props.note ??
     (props.cancelled
       ? `${capital(v.unlock)} was cancelled. Nothing was taken.`
-      : limitLow
-        ? "Your limit is lower than this deposit. Add to it first."
-        : balanceLow
-          ? "This wallet holds less than this deposit. Add USDC to it, or use another wallet."
+      : // An empty wallet comes first: adding to a limit needs the USDC there too.
+        balanceLow
+        ? "This wallet holds less than this deposit. Add USDC to it, or use another wallet."
+        : limitLow
+          ? "Your limit is lower than this deposit. Add to it first."
           : undefined);
   return (
     <>
@@ -302,29 +303,31 @@ function Confirm(props: { v: View; a: Actions; line: string; fine: string; note?
           </span>
           <span className="text">
             <span className="name">{shortAddress(v.wallet)}</span>
-            <span className="sub">{read ? `${money(read.balance)} USDC` : v.sourcePending ? "…" : "Balance not available"}</span>
+            <span className="sub">{read ? `${money(read.balance)} USDC in wallet` : v.sourcePending ? "…" : "Balance not available"}</span>
           </span>
         </div>
         {read && (
           <div className="pad">
             <div className="pair">
               <span>Limit</span>
-              <span className="soft">
-                {limitLow ? `${round(read.left)} USDC left` : `${round(String(leftAfter))} USDC left after this`}
+              <span>
+                {round(read.left)}
+                {read.limit === undefined ? "" : ` of ${round(read.limit)}`} USDC left
               </span>
             </div>
             {!limitLow && <LimitBar now={amount} rest={leftAfter} />}
+            {!limitLow && <p className="aside">{round(String(leftAfter))} USDC left after this deposit</p>}
           </div>
         )}
       </div>
       <Note text={said} />
       <div className="actions">
-        {limitLow ? (
+        {limitLow && !balanceLow ? (
           <Primary onClick={a.addToLimit} busy={v.busy}>
             Add to limit
           </Primary>
         ) : (
-          <Primary onClick={a.approve} busy={v.busy} disabled={v.sourcePending} faceId>
+          <Primary onClick={a.approve} busy={v.busy} disabled={v.sourcePending || balanceLow} faceId>
             Deposit with {unlockOnButton(v.unlock)}
           </Primary>
         )}

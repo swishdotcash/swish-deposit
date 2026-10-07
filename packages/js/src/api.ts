@@ -55,6 +55,8 @@ export interface DepositResult {
 export interface WalletStanding {
   left: string;
   balance: string;
+  /** The limit as last set; absent for a wallet set up before Swish kept it. */
+  limit?: string;
 }
 
 /** A setup transaction for the wallet to sign, or `done`. */

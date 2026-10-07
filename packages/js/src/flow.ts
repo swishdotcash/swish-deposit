@@ -400,7 +400,12 @@ export class DepositFlow {
     this.reading = true;
     try {
       const standing = await this.deps.api.allowance(known.credentialId, known.wallet);
-      this.from = { wallet: known.wallet, left: standing.left, balance: standing.balance };
+      this.from = {
+        wallet: known.wallet,
+        left: standing.left,
+        balance: standing.balance,
+        ...(standing.limit === undefined ? {} : { limit: standing.limit }),
+      };
     } catch {
       this.from = null;
     } finally {

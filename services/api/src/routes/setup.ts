@@ -62,6 +62,9 @@ const walletRef = z.object({
   wallet: z.string().refine(isAddress, "not a Solana address"),
 });
 
+/** How long reading a limit from the chain may hold up a wallet's standing. It carries on and is kept for next time. */
+const LIMIT_WAIT_MS = 500;
+
 /** The open deposit this setup is for, as the widget holds it. */
 const forDeposit = {
   deposit_id: z.string().min(1),
@@ -236,9 +239,13 @@ export function setupRouter(deps: Deps): Router {
       chain.allowances(walletAddress, deps.usdcMint),
       chain.tokenBalance(walletAddress, deps.usdcMint),
     ]);
+    const left = leftOf(allowances);
+    const limit = await limitOf(walletAddress, allowances, left);
     res.json({
       wallet: walletAddress,
-      left: fromBaseUnits(leftOf(allowances), USDC_DECIMALS),
+      left: fromBaseUnits(left, USDC_DECIMALS),
+      // The limit as last set. Left out when it could not be read in time.
+      ...(limit === null ? {} : { limit: fromBaseUnits(limit, USDC_DECIMALS) }),
       balance: fromBaseUnits(balance ?? 0n, USDC_DECIMALS),
       token: "USDC",
     });
@@ -308,13 +315,54 @@ export function setupRouter(deps: Deps): Router {
     });
   });
 
-  /** What is left across a wallet's current allowances (normally just one). */
-  const leftOf = (allowances: Allowance[]) => {
+  const current = (allowances: Allowance[]) => {
     const now = BigInt(Math.floor(Date.now() / 1000));
-    return allowances
-      .filter((a) => a.expiryTs === 0n || a.expiryTs >= now)
-      .reduce((sum, a) => sum + a.amount, 0n);
+    return allowances.filter((a) => a.expiryTs === 0n || a.expiryTs >= now);
   };
+
+  /** What is left across a wallet's current allowances (normally just one). */
+  const leftOf = (allowances: Allowance[]) => current(allowances).reduce((sum, a) => sum + a.amount, 0n);
+
+  /**
+   * The limit the wallet's allowance was created with, for "96 of 100 left".
+   * The chain is the source: the allowance's history is read once, kept, and
+   * after that only what is new is looked at. For display only, so it never
+   * holds the answer up or fails it: null when it is not known in time.
+   */
+  async function limitOf(wallet: Address, allowances: Allowance[], left: bigint): Promise<bigint | null> {
+    const [only, ...others] = current(allowances);
+    if (!only || others.length || left === 0n) return null;
+    const allowance = only.address;
+    const quiet = () => ({ rows: [] });
+    const { rows } = await db
+      .query<{ amount: string; read_to: string }>("select amount, read_to from wallet_limits where allowance = $1", [allowance])
+      .catch(quiet);
+    const kept = rows[0];
+    const read = chain
+      .limitSet(allowance, kept?.read_to)
+      .then(async ({ newest, amount }) => {
+        if (amount !== null && newest) {
+          await db
+            .query(
+              `insert into wallet_limits (allowance, wallet, amount, read_to) values ($1, $2, $3, $4)
+               on conflict (allowance) do update
+               set wallet = excluded.wallet, amount = excluded.amount, read_to = excluded.read_to, updated_at = now()`,
+              [allowance, wallet, amount.toString(), newest],
+            )
+            .catch(quiet);
+          return amount;
+        }
+        if (kept && newest) {
+          await db
+            .query("update wallet_limits set read_to = $2, updated_at = now() where allowance = $1", [allowance, newest])
+            .catch(quiet);
+        }
+        return kept ? BigInt(kept.amount) : null;
+      })
+      .catch(() => null);
+    const limit = await Promise.race([read, new Promise<null>((resolve) => setTimeout(() => resolve(null), LIMIT_WAIT_MS))]);
+    return limit !== null && limit >= left ? limit : null;
+  }
 
   async function allowanceInstruction(wallet: ReturnType<typeof createNoopSigner>, nonce: bigint, amount: bigint, initId: bigint) {
     return getCreateFixedDelegationOverlayInstructionAsync({

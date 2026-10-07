@@ -61,6 +61,14 @@ class FakeChain implements Chain {
   async linkedSwishId() {
     return this.linkedTo;
   }
+  limitHistory: { newest: string | null; amount: bigint | null } = { newest: null, amount: null };
+  limitReads: [Address, string | undefined][] = [];
+  limitFails = false;
+  async limitSet(allowance: Address, after?: string) {
+    this.limitReads.push([allowance, after]);
+    if (this.limitFails) throw new Error("rpc down");
+    return this.limitHistory;
+  }
   async linkedWallet() {
     return this.linkedTo ? { swishId: this.linkedTo, rentPayer: this.sponsor.address } : null;
   }
@@ -498,6 +506,32 @@ describe("setup", () => {
     const create = Buffer.from(ixs![1]!.data!);
     expect(create.includes(Buffer.from(new BigUint64Array([137_500_000n]).buffer))).toBe(true);
     expect(create.includes(Buffer.from(new BigUint64Array([1n]).buffer))).toBe(true);
+
+    // The limit it was created with comes from the chain, once; after that only what is new is read.
+    const standing = () => widget("/v1/setup/wallet/allowance", { credential_id: user.credentialId, wallet: addr(40) });
+    w.chain.limitHistory = { newest: "sigA", amount: 100_000_000n };
+    expect((await standing()).body).toMatchObject({ left: "37.5", limit: "100" });
+    w.chain.limitHistory = { newest: null, amount: null };
+    expect((await standing()).body).toMatchObject({ left: "37.5", limit: "100" });
+    // (the read above this block found no creation, so nothing was kept and the next one starts over)
+    expect(w.chain.limitReads).toEqual([[addr(50), undefined], [addr(50), undefined], [addr(50), "sigA"]]);
+    // A later deposit moves the mark, not the limit.
+    w.chain.limitHistory = { newest: "sigB", amount: null };
+    expect((await standing()).body.limit).toBe("100");
+    expect((await standing()).body.limit).toBe("100");
+    expect(w.chain.limitReads.at(-1)).toEqual([addr(50), "sigB"]);
+    // The same address made again with another limit: the newer creation wins.
+    w.chain.limitHistory = { newest: "sigC", amount: 60_000_000n };
+    expect((await standing()).body.limit).toBe("60");
+    // A slow or failing read leaves the limit out; what is left is still answered.
+    w.chain.limitFails = true;
+    const without = await standing();
+    expect(without.body).toMatchObject({ left: "37.5", balance: "1000" });
+    expect(without.body.limit).toBeUndefined();
+    w.chain.limitFails = false;
+    // Nothing left to pull from: no limit to speak of.
+    w.chain.walletAllowances = [];
+    expect((await standing()).body.limit).toBeUndefined();
   });
 
   it("unlinks a wallet with one signature: cancels its limit and the link, rent back, no deposit needed", async () => {
