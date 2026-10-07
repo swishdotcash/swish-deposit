@@ -489,6 +489,9 @@ describe("a first-time user", () => {
     expect(w.flow.screen).toEqual({ name: "passkey" });
     await w.flow.createPasskey();
     expect(w.flow.screen).toEqual({ name: "ready", purpose: "setup" });
+    // The limit was signed a moment ago and nothing is spent: it is what is left, even before the API has read it.
+    expect(w.flow.source?.limit).toBe(w.flow.source?.left);
+    expect(w.flow.source?.limit).toBeDefined();
     await w.flow.approve();
     expect(w.flow.screen.name).toBe("succeeded");
 

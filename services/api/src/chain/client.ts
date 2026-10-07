@@ -290,7 +290,8 @@ export class SolanaChain implements Chain {
 
   async limitSet(allowance: Address, after?: string): Promise<LimitSet> {
     const history = await this.rpc
-      .getSignaturesForAddress(allowance, { limit: 1000, ...(after ? { until: after as Signature } : {}) })
+      // Confirmed, not the default finalized: a limit set seconds ago is already in it.
+      .getSignaturesForAddress(allowance, { limit: 1000, commitment: "confirmed", ...(after ? { until: after as Signature } : {}) })
       .send();
     const newest = history[0]?.signature ?? null;
     const landed = history.filter((h) => h.err === null);
@@ -307,7 +308,9 @@ export class SolanaChain implements Chain {
 
   /** The amount this transaction created `allowance` with; null when it did not create it. */
   private async createdWith(allowance: Address, signature: Signature): Promise<bigint | null> {
-    const tx = await this.rpc.getTransaction(signature, { encoding: "json", maxSupportedTransactionVersion: 0 }).send();
+    const tx = await this.rpc
+      .getTransaction(signature, { encoding: "json", commitment: "confirmed", maxSupportedTransactionVersion: 0 })
+      .send();
     if (!tx) return null;
     const { message } = tx.transaction;
     const loaded = tx.meta?.loadedAddresses;

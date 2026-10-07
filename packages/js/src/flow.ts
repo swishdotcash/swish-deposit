@@ -108,6 +108,8 @@ export class DepositFlow {
   private chosen: string | null = null;
   private again: (() => void) | null = null;
   private from: Source | null = null;
+  /** The wallet set or added to its limit in this flow. */
+  private justSet = false;
   private reading = false;
   /** The wallets linked to this Swish ID, once a verify has listed them. */
   private linked: string[] | null = null;
@@ -400,12 +402,9 @@ export class DepositFlow {
     this.reading = true;
     try {
       const standing = await this.deps.api.allowance(known.credentialId, known.wallet);
-      this.from = {
-        wallet: known.wallet,
-        left: standing.left,
-        balance: standing.balance,
-        ...(standing.limit === undefined ? {} : { limit: standing.limit }),
-      };
+      // A limit signed moments ago may be too new for the API to have read; nothing is spent yet, so it is what is left.
+      const limit = standing.limit ?? (this.justSet ? standing.left : undefined);
+      this.from = { wallet: known.wallet, left: standing.left, balance: standing.balance, ...(limit === undefined ? {} : { limit }) };
     } catch {
       this.from = null;
     } finally {
@@ -531,6 +530,7 @@ export class DepositFlow {
   private async settled(): Promise<void> {
     this.deps.memory?.save({ credentialId: this.credentialId!, wallet: this.wallet!.address });
     const challenge = this.refresh();
+    this.justSet = true;
     const read = this.readSourceSoon();
     await challenge;
     await read;
