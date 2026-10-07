@@ -26,7 +26,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 a { color: inherit; text-decoration: none; }
 p { margin: 0; }
 
-/* Desktop only: the page keeps its three columns and scrolls sideways below this. */
+/* Three columns from 1200 up; one column on a phone (the rules at the end of this file). */
 .page { min-width: 1200px; max-width: 1440px; margin: 0 auto; }
 
 .top {
@@ -237,3 +237,25 @@ p { margin: 0; }
 }
 .facts strong { font-size: 24px; font-weight: 600; line-height: 30px; }
 .facts span { color: color-mix(in srgb, var(--ink) 55%, transparent); font-size: 12px; line-height: 16px; }
+
+/* A phone: one column. The demo comes straight after the headline, then what the server saw. */
+@media (max-width: 900px) {
+  .page { min-width: 0; }
+  .top { gap: 8px 16px; flex-wrap: wrap; height: auto; padding: 14px 20px; }
+  .links { gap: 16px; }
+  .body { flex-direction: column; gap: 28px; padding: 24px 20px 40px; }
+  /* The columns dissolve so their parts can be put in a phone's order. */
+  .left, .right { display: contents; }
+  .intro { order: 1; }
+  .center { order: 2; padding: 16px 12px 20px; }
+  .events-card { order: 3; }
+  .configure { order: 4; }
+  .reset { order: 5; }
+  .faucet { order: 6; }
+  .code-card { order: 7; }
+  .facts { order: 8; }
+  .intro h1 { font-size: 32px; line-height: 36px; }
+  .preview-header { padding: 0 8px 20px; }
+  .meridian { padding: 24px 20px 20px; width: 100%; }
+  .code-card pre { min-height: 0; }
+}

@@ -48,12 +48,23 @@ export function depositView(d: DepositRow) {
     reference: d.reference,
     signature: d.signature,
     error: d.error,
+    /** Which of the user's wallets paid; null until the deposit is submitted. */
+    wallet: d.wallet,
     created_at: new Date(d.created_at).toISOString(),
   };
 }
 
 const solanaAddress = z.string().refine(isAddress, "not a Solana address");
 const uuid = z.string().uuid();
+
+/** The most deposits one list call returns (demo only, see the route). */
+const LIST_MAX = 1000;
+
+const listQuery = z.object({
+  wallet: solanaAddress.optional(),
+  status: z.enum(["created", "submitted", "succeeded", "failed"]).optional(),
+  limit: z.coerce.number().int().min(1).max(LIST_MAX).default(100),
+});
 
 const createBody = z.object({
   amount: z.string().refine((a) => {
@@ -149,6 +160,24 @@ export function depositsRouter(deps: Deps): Router {
       }
       throw e;
     }
+  });
+
+  /**
+   * DEMO ONLY. Your app's deposits, newest first: all of them, or one
+   * wallet's, or those in one status. Added so the demo page
+   * (demo.swish.cash) can show a balance without a database of its own. Not
+   * part of the documented API: no paging, and it may change or go. A real
+   * app keeps its own ledger from the webhooks.
+   */
+  router.get("/v1/deposits", secret, async (req, res) => {
+    const q = listQuery.parse(req.query);
+    const { rows } = await db.query<DepositRow>(
+      `select * from deposits
+       where app_id = $1 and ($2::text is null or wallet = $2) and ($3::text is null or status = $3)
+       order by created_at desc limit $4`,
+      [currentApp(res).id, q.wallet ?? null, q.status ?? null, q.limit],
+    );
+    res.json({ data: rows.map(depositView) });
   });
 
   router.get("/v1/deposits/:id", secret, async (req, res) => {
@@ -259,8 +288,7 @@ export function depositsRouter(deps: Deps): Router {
       });
     }
     void sendWebhook(deps, app, final);
-    // The widget also learns which of the user's wallets paid.
-    res.json({ ...depositView(final), wallet: final.wallet });
+    res.json(depositView(final));
   });
 
   async function challengeFor(d: DepositRow): Promise<Uint8Array> {

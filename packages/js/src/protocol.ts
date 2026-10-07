@@ -26,6 +26,7 @@ export type FromFrame =
   | { swish: "ready" }
   | { swish: "succeeded"; deposit: DepositResult }
   | { swish: "closed"; deposit: DepositResult | null }
+  /** The answer to "known", and sent unasked once a passkey has shown whose browser this is. */
   | { swish: "known"; wallet: string | null }
   | { swish: "unlinked"; address: string }
   | { swish: "unlink_failed"; message: string };

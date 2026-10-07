@@ -41,7 +41,13 @@ function open(m: Extract<ToFrame, { swish: "open" }>, page: string) {
   );
   // The flow shows its last screen again when the numbers behind it arrive; the page hears of a deposit once.
   let told = false;
+  let known = false;
   flow.onChange((screen) => {
+    // Their wallets are on show: the passkey has said who this is, so the page can know their wallet too.
+    if (screen.name === "source" && !known) {
+      known = true;
+      tell({ swish: "known", wallet: memory.load()?.wallet ?? null }, page);
+    }
     if (screen.name !== "succeeded" || told) return;
     told = true;
     tell({ swish: "succeeded", deposit: screen.result }, page);

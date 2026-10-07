@@ -31,6 +31,7 @@ const KEEP_FOR_MS = 10 * 60_000;
 const WEBHOOK_GRACE_MS = 4_000;
 const WEBHOOK_MAX_AGE_S = 300;
 const CREATES_PER_MINUTE = 20;
+const READS_PER_MINUTE = 60;
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -113,13 +114,15 @@ function signedBySwish(header, body) {
 }
 
 const creates = new Map();
-function tooMany(ip) {
+const reads = new Map();
+function tooMany(seen, ip, perMinute) {
   const now = Date.now();
-  const recent = (creates.get(ip) ?? []).filter((t) => now - t < 60_000);
+  const recent = (seen.get(ip) ?? []).filter((t) => now - t < 60_000);
   recent.push(now);
-  creates.set(ip, recent);
-  return recent.length > CREATES_PER_MINUTE;
+  seen.set(ip, recent);
+  return recent.length > perMinute;
 }
+const ipOf = (req) => String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0].trim();
 
 createServer(async (req, res) => {
   try {
@@ -132,8 +135,7 @@ createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && path === "/api/deposits") {
-      const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0].trim();
-      if (tooMany(ip)) return json(res, 429, { error: { code: "slow_down", message: "Too many deposits started. Try again in a minute." } });
+      if (tooMany(creates, ipOf(req), CREATES_PER_MINUTE)) return json(res, 429, { error: { code: "slow_down", message: "Too many deposits started. Try again in a minute." } });
       const { amount } = JSON.parse((await readBody(req)) || "{}");
       const value = Number(amount);
       if (!/^\d+(\.\d{1,6})?$/.test(String(amount)) || value < MIN_AMOUNT || value > MAX_AMOUNT) {
@@ -146,6 +148,19 @@ createServer(async (req, res) => {
       say(id, "sent", "POST /v1/deposits · created");
       watch(id);
       return json(res, 201, { id, client_secret });
+    }
+
+    // DEMO ONLY. Meridian keeps no accounts of its own: a wallet's balance here is its deposits that landed,
+    // added up from Swish's demo-only list of deposits. A real app credits its own users from the webhook.
+    if (req.method === "GET" && path === "/api/balance") {
+      if (tooMany(reads, ipOf(req), READS_PER_MINUTE)) return json(res, 429, { error: { code: "slow_down", message: "Too many requests. Try again in a minute." } });
+      const wallet = url.searchParams.get("wallet") ?? "";
+      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) return json(res, 400, { error: { code: "bad_wallet", message: "Not a wallet address." } });
+      const listed = await swish(`/v1/deposits?wallet=${wallet}&status=succeeded&limit=1000`);
+      if (listed.status >= 300) return json(res, 502, { error: { code: "unavailable", message: "The balance could not be read." } });
+      // Added up in millionths of a USDC, so 0.1 + 0.2 is 0.3.
+      const millionths = listed.body.data.reduce((sum, d) => sum + Math.round(Number(d.amount) * 1e6), 0);
+      return json(res, 200, { wallet, balance: String(millionths / 1e6) });
     }
 
     const events = /^\/api\/deposits\/([0-9a-f-]{36})\/events$/.exec(path)?.[1];

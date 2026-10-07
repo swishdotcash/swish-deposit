@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DepositResult } from "core/api";
 import { mountDepositButton, type DepositButton } from "core/button";
 import { shortAddress, unlockName } from "core/format";
-import { knownWallet, unlinkWallet } from "core/loader";
+import { knownWallet, unlinkWallet, watchKnownWallet } from "core/loader";
 import type { Theme } from "core/protocol";
 import { browserWallets, type Cluster } from "core/wallet";
 
@@ -24,7 +24,6 @@ interface ServerEvent {
   at: number;
 }
 
-const BALANCE_KEY = "meridian-balance";
 const DEFAULT_AMOUNT = "5";
 // The server refuses more; the field does not let you type it.
 const MAX_AMOUNT = 5;
@@ -72,27 +71,28 @@ const Logo = ({ className }: { className: string }) => (
   </svg>
 );
 
-const readBalance = () => {
-  try {
-    return Number(localStorage.getItem(BALANCE_KEY)) || 0;
-  } catch {
-    return 0;
-  }
-};
-const writeBalance = (value: number) => {
-  try {
-    localStorage.setItem(BALANCE_KEY, String(value));
-  } catch {
-    // A private window: the balance lasts as long as the page.
-  }
-};
-
 const clock = (at: number) => new Date(at).toLocaleTimeString("en-GB", { hour12: false });
 
 export function App({ config }: { config: Config }) {
   const [theme, setTheme] = useState<Theme>("light");
   const [amount, setAmount] = useState(DEFAULT_AMOUNT);
-  const [balance, setBalance] = useState(readBalance);
+  const [balance, setBalance] = useState(0);
+  // Meridian's server keeps the balance, by wallet: the same on a laptop and a phone.
+  const loadBalance = async (wallet: string | null) => {
+    if (!wallet) return setBalance(0);
+    try {
+      const res = await fetch(`/api/balance?wallet=${wallet}`);
+      if (res.ok) setBalance(Number((await res.json()).balance) || 0);
+    } catch {
+      // The balance stays as it was.
+    }
+  };
+  useEffect(() => {
+    // Heard on load, after each close, and as soon as a passkey has shown whose browser this is.
+    const stop = watchKnownWallet(config, (wallet) => void loadBalance(wallet));
+    void knownWallet(config).catch(() => {});
+    return stop;
+  }, [config]);
   const [events, setEvents] = useState<ServerEvent[]>([]);
   const [tab, setTab] = useState<"browser" | "server">("browser");
   const [copied, setCopied] = useState(false);
@@ -131,11 +131,8 @@ export function App({ config }: { config: Config }) {
         return body;
       },
       onSuccess: (deposit: DepositResult) => {
-        setBalance((had) => {
-          const has = had + Number(deposit.amount);
-          writeBalance(has);
-          return has;
-        });
+        if (deposit.wallet) void loadBalance(deposit.wallet);
+        else setBalance((had) => had + Number(deposit.amount));
       },
       onError: (e) => setNote(e instanceof Error ? e.message : "The deposit could not be started."),
     });
@@ -168,7 +165,6 @@ export function App({ config }: { config: Config }) {
     try {
       await unlinkWallet({ ...config, wallet });
       setBalance(0);
-      writeBalance(0);
       setEvents([]);
       button.current?.refresh();
       setReset({ state: "idle", note: "Unlinked. Press the button to run setup again." });

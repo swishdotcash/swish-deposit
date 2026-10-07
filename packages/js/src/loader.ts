@@ -63,7 +63,21 @@ export function prepare(options: FrameOptions = {}): void {
   frameFor(options.frameUrl);
 }
 
-/** The wallet this browser's last deposit came from, for a button that shows it. Null when there is none. */
+/**
+ * Calls `listener` whenever the frame says which wallet this browser knows:
+ * after `knownWallet` asks, and as soon as a passkey has shown whose browser
+ * this is. Returns a function that stops it.
+ */
+export function watchKnownWallet(options: FrameOptions, listener: (wallet: string | null) => void): () => void {
+  const frame = frameFor(options.frameUrl);
+  const listen = (m: FromFrame) => {
+    if (m.swish === "known") listener(m.wallet);
+  };
+  frame.listeners.add(listen);
+  return () => void frame.listeners.delete(listen);
+}
+
+/** The wallet this browser last verified or deposited with, for a button that shows it. Null when there is none. */
 export function knownWallet(options: FrameOptions = {}): Promise<string | null> {
   const frame = frameFor(options.frameUrl);
   return new Promise((resolve) => {

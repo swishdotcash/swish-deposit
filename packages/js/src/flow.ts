@@ -206,6 +206,9 @@ export class DepositFlow {
       await this.refresh();
       const last = this.deps.memory?.load()?.wallet;
       const selected = wallets.find((w) => w.enough && w.wallet === last) ?? wallets.find((w) => w.enough);
+      // The passkey has said who this is: the browser knows their wallet from here, deposit or not.
+      const theirs = selected ?? wallets.find((w) => w.wallet === last) ?? wallets[0]!;
+      this.deps.memory?.save({ credentialId: approval.credentialId, wallet: theirs.wallet });
       this.show({ name: "source", wallets, selected: selected?.wallet ?? null });
     } catch (e) {
       this.submitRefused(e);

@@ -26,6 +26,7 @@ export {
   openDeposit,
   prepare,
   unlinkWallet,
+  watchKnownWallet,
   type DepositOutcome,
   type FrameOptions,
   type OpenDepositOptions,

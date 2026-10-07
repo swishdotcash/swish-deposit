@@ -281,6 +281,29 @@ describe("one Face ID moves the money", () => {
     expect(hook.signature).toBe(signWebhook(w.keys.secretHash, t, hook.body));
   });
 
+  it("lists an app's deposits, newest first, by wallet and by status (demo only)", async () => {
+    const user = await setUpUser();
+    const paid = await createDeposit("12.5");
+    const res = await approve(paid, user);
+    const wallet = res.body.wallet as string;
+    expect(wallet).toBeTruthy();
+    const open = await createDeposit("3");
+
+    const all = await server().get("/v1/deposits");
+    expect(all.status).toBe(200);
+    expect(all.body.data.map((d: { id: string }) => d.id)).toEqual([open.id, paid.id]);
+    // What a wallet has put into the app: its deposits that landed.
+    const theirs = await server().get(`/v1/deposits?wallet=${wallet}&status=succeeded`);
+    expect(theirs.body.data).toHaveLength(1);
+    expect(theirs.body.data[0]).toMatchObject({ id: paid.id, amount: "12.5", status: "succeeded", wallet });
+    expect((await server().get(`/v1/deposits?wallet=${addr(99)}`)).body.data).toEqual([]);
+    expect((await server().get("/v1/deposits?status=created")).body.data.map((d: { id: string }) => d.id)).toEqual([open.id]);
+    expect((await server().get("/v1/deposits?limit=1")).body.data).toHaveLength(1);
+    expect((await server().get("/v1/deposits?wallet=nope")).status).toBe(400);
+    // The webhook names the wallet too.
+    expect(JSON.parse(w.webhooks[0]!.body).data.wallet).toBe(wallet);
+  });
+
   it("shows the wallets a deposit can come from, only against a Face ID approval of it", async () => {
     const user = await setUpUser();
     const d = await createDeposit("12.5");

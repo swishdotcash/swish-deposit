@@ -395,6 +395,8 @@ describe("a Swish user on a browser that does not know them", () => {
     expect(w.flow.screen).toEqual({ name: "source", wallets: [choice(WALLET, "16", "6", true)], selected: WALLET });
     // The first Face ID only said who this is: nothing was sent.
     expect(w.calls).toEqual(["challenge", "faceid:challenge-1", "sources:cred-1", "challenge"]);
+    // It is enough for this browser to know them: the page can show their wallet before any deposit.
+    expect(w.script.remembered).toEqual({ credentialId: "cred-1", wallet: WALLET });
 
     await w.flow.payFrom();
     expect(w.flow.screen.name).toBe("succeeded");
