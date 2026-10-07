@@ -39,8 +39,12 @@ function open(m: Extract<ToFrame, { swish: "open" }>, page: string) {
       memory,
     },
   );
+  // The flow shows its last screen again when the numbers behind it arrive; the page hears of a deposit once.
+  let told = false;
   flow.onChange((screen) => {
-    if (screen.name === "succeeded") tell({ swish: "succeeded", deposit: screen.result }, page);
+    if (screen.name !== "succeeded" || told) return;
+    told = true;
+    tell({ swish: "succeeded", deposit: screen.result }, page);
   });
   session = { flow, cluster: m.cluster, theme, page };
   root.render(
