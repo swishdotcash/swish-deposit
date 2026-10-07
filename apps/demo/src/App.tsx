@@ -103,6 +103,15 @@ export function App({ config }: { config: Config }) {
   // Wallet apps announce themselves over time, so start listening on load.
   const wallets = useMemo(() => browserWallets(config.cluster), [config.cluster]);
 
+  // No wallet in this browser (a phone): other steps, and nothing to start over with.
+  const [noWallet, setNoWallet] = useState(false);
+  useEffect(() => {
+    // Wallet apps announce themselves a moment after the page loads.
+    const check = () => setNoWallet(wallets.list().length === 0);
+    const timers = [setTimeout(check, 1200), setTimeout(check, 4000)];
+    return () => timers.forEach(clearTimeout);
+  }, [wallets]);
+
   const slot = useRef<HTMLDivElement>(null);
   const button = useRef<DepositButton | null>(null);
   const amountNow = useRef(amount);
@@ -182,6 +191,22 @@ export function App({ config }: { config: Config }) {
 
   // Kept on one line: "Touch ID" never breaks in the middle.
   const unlock = unlockName().replace(/ /g, "\u00a0");
+  const Unlock = unlock.charAt(0).toUpperCase() + unlock.slice(1);
+  // Setup needs a wallet to sign, and a phone has none: it deposits with the passkey made on a computer.
+  const steps: [string, string][] = noWallet
+    ? [
+        ["Set up once on a computer.", "Open this page there and do the first deposit with your wallet."],
+        ["Come back here and press Deposit with Swish.", "Choose your existing passkey."],
+        [`${Unlock} to confirm it's you, ${unlock} to deposit.`, "No wallet app needed."],
+        ["Deposit again.", `This time it is one ${unlock}.`],
+      ]
+    : [
+        ["Switch your wallet to devnet.", "In Phantom: Settings, Developer settings, Testnet mode."],
+        ["Get test USDC", "from the faucet below. No SOL needed: Swish pays the network fees."],
+        ["Press Deposit with Swish.", "Connect the wallet, set a limit, create your passkey."],
+        ["Deposit again.", `This time it is one ${unlock}, and no wallet.`],
+        ["Now open this page on your phone", "and deposit with Face ID."],
+      ];
 
   return (
     <div className="page">
@@ -216,30 +241,14 @@ export function App({ config }: { config: Config }) {
             <div className="control">
               <div className="label">Try it</div>
               <ol className="steps">
-                <li>
-                  <span>1</span>
-                  <p>
-                    <b>Switch your wallet to devnet.</b> In Phantom: Settings, Developer settings, Testnet mode.
-                  </p>
-                </li>
-                <li>
-                  <span>2</span>
-                  <p>
-                    <b>Get test USDC</b> from the faucet below. No SOL needed: Swish pays the network fees.
-                  </p>
-                </li>
-                <li>
-                  <span>3</span>
-                  <p>
-                    <b>Press Deposit with Swish.</b> Connect the wallet, set a limit, create your passkey.
-                  </p>
-                </li>
-                <li>
-                  <span>4</span>
-                  <p>
-                    <b>Deposit again.</b> This time it is one {unlock}, and no wallet.
-                  </p>
-                </li>
+                {steps.map(([lead, rest], n) => (
+                  <li key={lead}>
+                    <span>{n + 1}</span>
+                    <p>
+                      <b>{lead}</b> {rest}
+                    </p>
+                  </li>
+                ))}
               </ol>
             </div>
 
@@ -256,7 +265,7 @@ export function App({ config }: { config: Config }) {
           </div>
 
           <div className="reset">
-            {reset.state === "idle" && (
+            {reset.state === "idle" && !noWallet && (
               <button type="button" className="start-over" onClick={chooseWallet}>
                 Start over
               </button>
@@ -273,7 +282,9 @@ export function App({ config }: { config: Config }) {
             {reset.state === "working" && <div className="start-over waiting">Waiting for your wallet</div>}
             <p className={reset.failed ? "hint failed" : "hint"} role="status">
               {reset.note ??
-                (reset.state === "choosing"
+                (noWallet
+                  ? "To start over, open this page on the computer you set up with."
+                  : reset.state === "choosing"
                   ? "Pick the wallet you set up with. It signs once to unlink."
                   : "Unlinks your test wallet and clears its limit, so you can run setup again.")}
             </p>
