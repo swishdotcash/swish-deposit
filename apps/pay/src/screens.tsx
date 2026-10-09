@@ -286,7 +286,7 @@ function Confirm(props: { v: View; a: Actions; line: string; fine: string; note?
   const said =
     props.note ??
     (props.cancelled
-      ? `${capital(v.unlock)} was cancelled. Nothing was taken.`
+      ? `${capital(v.unlock)} did not finish. Nothing was sent. Try again.`
       : // An empty wallet comes first: adding to a limit needs the USDC there too.
         balanceLow
         ? "This wallet holds less than this deposit. Add USDC to it, or use another wallet."
@@ -396,7 +396,7 @@ function PayFrom({ v, a, screen }: { v: View; a: Actions; screen: Extract<Screen
       <Note
         text={
           screen.cancelled
-            ? `${capital(v.unlock)} was cancelled. Nothing was taken.`
+            ? `${capital(v.unlock)} did not finish. Nothing was sent. Try again.`
             : none
               ? "None of your wallets can cover this deposit. Add to a limit, or add USDC to a wallet."
               : undefined
