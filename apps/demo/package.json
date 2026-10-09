@@ -6,7 +6,7 @@
   "description": "The Swish Deposit demo: a pretend app with the real button, and what its server sees (demo.swish.cash).",
   "scripts": {
     "dev": "vite",
-    "dev:server": "node server.mjs",
+    "dev:server": "node --env-file=.env server.mjs",
     "build": "vite build",
     "start": "node server.mjs",
     "typecheck": "tsc --noEmit"
