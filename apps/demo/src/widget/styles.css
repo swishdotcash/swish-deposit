@@ -1,0 +1,542 @@
+/* ---- top bar ---- */
+.widget-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.logo {
+  width: 40px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.close {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) var(--close), transparent);
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+.close:disabled {
+  opacity: 0.35;
+}
+
+/* ---- setup: steps, heading ---- */
+.steps {
+  display: flex;
+  gap: 4px;
+  padding-top: 20px;
+}
+.steps i {
+  flex: 1 1 0;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.steps i.on {
+  background: var(--fg);
+}
+.heading {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 28px 0 24px;
+}
+.eyebrow {
+  font-size: 13px;
+  line-height: 18px;
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+.title {
+  margin: 0;
+  font-size: 30px;
+  line-height: 36px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: pre-line;
+}
+.lede {
+  margin: 0;
+  font-size: 14px;
+  line-height: 21px;
+  color: color-mix(in srgb, var(--fg) 60%, transparent);
+}
+
+/* ---- option rows (connect a wallet, pick a wallet) ---- */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  border-radius: 16px;
+}
+.option.filled {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--fg) var(--field), transparent);
+}
+.option.selected {
+  border-color: var(--fg);
+  background: color-mix(in srgb, var(--fg) var(--field), transparent);
+}
+.option:disabled {
+  cursor: default;
+}
+.badge {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--icon-bg);
+  color: var(--icon-fg);
+}
+.badge.round {
+  border-radius: 999px;
+}
+.badge.dim {
+  opacity: 0.4;
+}
+.badge img {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+}
+.option .text {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.name {
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 500;
+}
+.name.dim {
+  color: color-mix(in srgb, var(--fg) 45%, transparent);
+}
+.sub {
+  font-size: 13px;
+  line-height: 18px;
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+.sub.warn {
+  color: var(--pending);
+}
+.chevron {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--fg) 60%, transparent);
+}
+.radio {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1.5px solid color-mix(in srgb, var(--fg) 30%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.radio.on {
+  border: 0;
+  background: var(--fg);
+}
+.radio.on::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg);
+}
+.row-action {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+}
+.or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+.or::before,
+.or::after {
+  content: "";
+  flex: 1 1 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.label {
+  padding-bottom: 4px;
+  font-size: 13px;
+  line-height: 18px;
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+.text-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 4px 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: color-mix(in srgb, var(--fg) 60%, transparent);
+}
+
+/* ---- limit ---- */
+.limit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.limit .steps {
+  padding-top: 8px;
+}
+.limit .heading {
+  padding: 16px 0 12px;
+}
+.presets {
+  display: flex;
+  gap: 8px;
+}
+.preset {
+  flex: 1 1 0;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  border-radius: 16px;
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 600;
+}
+.preset.on {
+  border-color: var(--fg);
+  background: var(--fg);
+  color: var(--bg);
+}
+.other {
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 16px;
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  border-radius: 999px;
+}
+.other.on {
+  border-color: var(--fg);
+}
+.other input {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 15px;
+  line-height: 20px;
+}
+.other input:focus-visible {
+  outline: 0;
+}
+.other input::placeholder {
+  color: color-mix(in srgb, var(--fg) 45%, transparent);
+}
+.other span {
+  font-size: 13px;
+  line-height: 18px;
+  color: color-mix(in srgb, var(--fg) 45%, transparent);
+}
+
+/* ---- panels, rows, the limit bar ---- */
+.panel {
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fg) var(--field), transparent);
+}
+.panel > .pad {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 16px;
+}
+.panel > * + * {
+  border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.pair {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 18px;
+}
+.pair > :first-child {
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+.pair > .soft {
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+.bar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  flex-shrink: 0;
+}
+.bar i {
+  height: 6px;
+  min-width: 6px;
+  border-radius: 999px;
+  flex-basis: 0;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.bar i.now {
+  background: var(--fg);
+}
+.bar i.used {
+  background: color-mix(in srgb, var(--fg) 30%, transparent);
+}
+.aside {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--fg) 55%, transparent);
+}
+.source {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+.source .text {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.change {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  line-height: 20px;
+  color: color-mix(in srgb, var(--fg) 60%, transparent);
+}
+.numbered {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  font-size: 15px;
+  line-height: 20px;
+}
+.numbered b {
+  width: 24px;
+  flex-shrink: 0;
+  font-weight: 400;
+  font-size: 13px;
+  line-height: 18px;
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+
+/* ---- the amount ---- */
+.amount-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 36px 0 32px;
+}
+.to {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 20px;
+  color: color-mix(in srgb, var(--fg) 60%, transparent);
+}
+.app-mark {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--fg);
+  color: var(--bg);
+  font-size: 12px;
+  line-height: 12px;
+  font-weight: 700;
+}
+.to .grow {
+  flex: 1 1 0;
+}
+.locked {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+.amount {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.amount strong {
+  font-size: 60px;
+  line-height: 64px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+.amount span {
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--fg) var(--unit), transparent);
+}
+
+/* ---- actions ---- */
+.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding-top: 20px;
+}
+.primary {
+  width: 100%;
+  height: 52px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: 999px;
+  background: var(--fg);
+  color: var(--bg);
+  box-shadow: var(--button-shadow);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.primary:disabled {
+  opacity: 0.55;
+  box-shadow: none;
+}
+.primary.busy {
+  opacity: 1;
+}
+.fine {
+  width: 100%;
+  margin: 0;
+  text-align: center;
+  font-size: 12px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--fg) 55%, transparent);
+}
+.fine button,
+.fine a {
+  color: inherit;
+  text-decoration: underline 1px dashed;
+  text-underline-offset: 4px;
+}
+.note {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--pending);
+}
+.note.error {
+  color: var(--error);
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: spin 0.7s linear infinite;
+}
+.waiting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-top: 20px;
+  font-size: 13px;
+  line-height: 18px;
+  color: color-mix(in srgb, var(--fg) 60%, transparent);
+}
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: 72px 0 60px;
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
+}
+
+/* ---- landed ---- */
+.landed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 44px 0 36px;
+}
+.landed .sum {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-top: 24px;
+}
+.landed .sum strong {
+  font-size: 36px;
+  line-height: 40px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.landed .sum span {
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--fg) var(--unit), transparent);
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 20px;
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+.status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--success);
+}

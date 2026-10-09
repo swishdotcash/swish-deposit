@@ -6,6 +6,8 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoRoutes } from "./server/routes.mjs";
+import { widgetProxy } from "./server/widget-proxy.mjs";
 
 const dist = join(dirname(fileURLToPath(import.meta.url)), "dist");
 const required = (name) => {
@@ -16,7 +18,6 @@ const required = (name) => {
 
 const PORT = Number(process.env.PORT ?? 5183);
 const API_URL = (process.env.SWISH_API_URL ?? "https://api.swish.cash").replace(/\/+$/, "");
-const FRAME_URL = (process.env.SWISH_FRAME_URL ?? "https://pay.swish.cash").replace(/\/+$/, "");
 const CLUSTER = process.env.SWISH_CLUSTER ?? "devnet";
 const PUBLISHABLE_KEY = required("SWISH_PUBLISHABLE_KEY");
 const SECRET_KEY = required("SWISH_SECRET_KEY");
@@ -65,6 +66,13 @@ async function swish(path, body) {
 
 /** What this server has seen of each deposit, for the page's log. */
 const deposits = new Map();
+const handleDemo = demoRoutes({
+  cluster: CLUSTER,
+  getDeposit: (id) => deposits.get(id),
+  readDeposit: (id) => swish(`/v1/deposits/${id}`),
+});
+
+const handleWidget = widgetProxy({ apiUrl: API_URL, publishableKey: PUBLISHABLE_KEY, publicOrigin: process.env.DEMO_PUBLIC_ORIGIN });
 
 function say(id, kind, text) {
   const d = deposits.get(id);
@@ -129,9 +137,11 @@ createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
     const path = normalize(decodeURIComponent(url.pathname));
     if (path === "/health") return json(res, 200, { ok: true });
+    if (await handleDemo(req, res, url)) return;
+    if (await handleWidget(req, res, url)) return;
 
     if (req.method === "GET" && path === "/api/config") {
-      return json(res, 200, { publishableKey: PUBLISHABLE_KEY, apiUrl: API_URL, cluster: CLUSTER, frameUrl: FRAME_URL });
+      return json(res, 200, { publishableKey: PUBLISHABLE_KEY, apiUrl: process.env.DEMO_PUBLIC_ORIGIN ? "/api/swish" : API_URL, cluster: CLUSTER, publicOrigin: process.env.DEMO_PUBLIC_ORIGIN ?? null });
     }
 
     if (req.method === "POST" && path === "/api/deposits") {
@@ -144,7 +154,7 @@ createServer(async (req, res) => {
       const created = await swish("/v1/deposits", { amount: String(amount), token: "USDC", destination: DESTINATION });
       if (created.status >= 300) return json(res, created.status, created.body);
       const { id, client_secret } = created.body;
-      deposits.set(id, { events: [], listeners: new Set(), webhook: false, timer: null });
+      deposits.set(id, { clientSecret: client_secret, events: [], listeners: new Set(), webhook: false, timer: null });
       say(id, "sent", "POST /v1/deposits · created");
       watch(id);
       return json(res, 201, { id, client_secret });
