@@ -8,7 +8,7 @@ import { z } from "zod";
 import { fromBaseUnits, toBaseUnits } from "../amount.js";
 import { currentApp, requirePublishableKey, requireSecretKey } from "../auth.js";
 import { ChainError } from "../chain/client.js";
-import { pullChallenge, pullInstruction, receiptPda, swishIdPda, uuidBytes } from "../chain/program.js";
+import { PROGRAM_ID, pullChallenge, pullInstruction, receiptPda, swishIdPda, uuidBytes } from "../chain/program.js";
 import { PasskeyError, b64url, fromB64url, secp256r1Instruction, verifyAssertion } from "../chain/webauthn.js";
 import { MIN_DEPOSIT, SIGNATURE_LIFETIME_SECONDS, USDC_DECIMALS, type AppRow, type Deps } from "../context.js";
 import type { Db } from "../db.js";
@@ -294,6 +294,7 @@ export function depositsRouter(deps: Deps): Router {
   async function challengeFor(d: DepositRow): Promise<Uint8Array> {
     return pullChallenge({
       clusterTag: await chain.clusterTag(),
+      programId: PROGRAM_ID,
       depositId: uuidBytes(d.id),
       appId: uuidBytes(d.app_id),
       mint: address(d.mint),

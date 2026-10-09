@@ -16,7 +16,9 @@ import {
 } from "@solana/kit";
 import { SUBSCRIPTIONS_PROGRAM_ADDRESS, findEventAuthorityPda } from "@solana/subscriptions";
 
-export const PROGRAM_ID = address("D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p");
+const configuredProgramId = process.env.SWISH_PROGRAM_ID;
+if (!configuredProgramId) throw new Error("SWISH_PROGRAM_ID is not set. Set it in services/api/.env.");
+export const PROGRAM_ID = address(configuredProgramId);
 export const SYSTEM_PROGRAM = address("11111111111111111111111111111111");
 export const INSTRUCTIONS_SYSVAR = address("Sysvar1nstructions1111111111111111111111111");
 export const SECP256R1_PROGRAM = address("Secp256r1SigVerify1111111111111111111111111");
@@ -55,6 +57,7 @@ export function clusterTag(genesisHashBytes: Uint8Array): Uint8Array {
 
 export interface PullChallenge {
   clusterTag: Uint8Array;
+  programId: Address;
   depositId: Uint8Array;
   appId: Uint8Array;
   mint: Address;
@@ -72,7 +75,7 @@ export function pullChallenge(c: PullChallenge): Uint8Array {
   return sha256(
     PULL_DOMAIN,
     c.clusterTag,
-    addressBytes(PROGRAM_ID),
+    addressBytes(c.programId),
     c.depositId,
     c.appId,
     addressBytes(c.mint),

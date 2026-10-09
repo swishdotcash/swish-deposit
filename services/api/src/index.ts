@@ -31,5 +31,5 @@ scheduleReceiptCleanup({ db, chain });
 
 // "::" so Railway's IPv6 private network reaches it too.
 app.listen(env.PORT, "::", () => {
-  console.log(`swish-deposit api on :${env.PORT} (${env.CLUSTER}, sponsor ${sponsor.address})`);
+  console.log(`swish-deposit api on :${env.PORT} (${env.CLUSTER}, program ${env.SWISH_PROGRAM_ID}, sponsor ${sponsor.address})`);
 });

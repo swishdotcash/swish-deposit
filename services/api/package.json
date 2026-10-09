@@ -12,7 +12,7 @@
     "add-origin": "tsx scripts/add-origin.ts",
     "set-webhook": "tsx scripts/set-webhook.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "SWISH_PROGRAM_ID=D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p vitest run"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
