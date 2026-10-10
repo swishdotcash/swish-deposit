@@ -15,8 +15,8 @@ export function DeviceButton({
     <button className="device-button" onClick={onClick} disabled={disabled}>
       <span className="device-icon">
         <svg
-          width="32"
-          height="32"
+          width="20"
+          height="20"
           viewBox="0 0 24 24"
           fill="none"
           aria-hidden="true"
