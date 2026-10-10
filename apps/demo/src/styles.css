@@ -336,6 +336,13 @@ h3 {
   line-height: 26px;
   font-weight: 600;
 }
+/* The field shows focus on its own border, so the input needs no outline. */
+.amount-field input:focus-visible {
+  outline: 0;
+}
+.amount-field:focus-within {
+  border-color: #121212;
+}
 .amount-field span {
   color: #888;
   font-size: 14px;
