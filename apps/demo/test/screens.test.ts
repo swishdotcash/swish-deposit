@@ -122,3 +122,23 @@ describe("widget display states", () => {
     }
   });
 });
+it("offers the existing passkey at every setup step, until this browser knows the wallet", () => {
+  const fresh: View = { ...view, wallet: null, source: null };
+  const steps = [
+    { name: "confirm" },
+    { name: "wallets", purpose: "setup", wallets: [{ name: "Phantom", icon: "data:," }] },
+    { name: "limit", purpose: "setup", wallet, balance: "10", choices: ["100", "250", "500"], minimum: "5" },
+    { name: "passkey" },
+  ] as const;
+  const html = (v: View, screen: (typeof steps)[number]) =>
+    renderToStaticMarkup(createElement(ScreenBody, { v, a, screen: screen as never }));
+  expect(html(fresh, steps[0])).toContain("Use my Swish passkey");
+  for (const screen of steps.slice(1))
+    expect(html(fresh, screen)).toContain("Already have a Swish passkey?");
+  // A browser that remembers the wallet is past this: no offer while adding a wallet or a limit.
+  for (const screen of steps.slice(1))
+    expect(html(view, screen)).not.toContain("Already have a Swish passkey?");
+  expect(
+    html(fresh, { name: "wallets", purpose: "raise", wallets: [{ name: "Phantom", icon: "data:," }] } as never),
+  ).not.toContain("Already have a Swish passkey?");
+});

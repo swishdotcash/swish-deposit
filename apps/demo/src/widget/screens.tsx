@@ -12,6 +12,7 @@ import type { Cluster } from "core/wallet";
 import {
   AmountBlock,
   Chevron,
+  FaceId,
   Heading,
   LimitBar,
   Primary,
@@ -97,6 +98,23 @@ const to = (v: View) =>
     : "";
 
 /** First time in this browser: connect a wallet, or use a passkey made elsewhere. */
+/**
+ * For someone who set up before, on another browser or device: their passkey
+ * finds their wallet, so they can leave setup at any step. Hidden once this
+ * browser knows who they are.
+ */
+function HavePasskey({ v, a }: { v: View; a: Actions }) {
+  if (v.wallet) return null;
+  return (
+    <p className="fine" style={{ paddingTop: 16 }}>
+      Already have a Swish passkey?{" "}
+      <button onClick={a.approve} disabled={!!v.busy}>
+        Use it
+      </button>
+    </p>
+  );
+}
+
 function Welcome({
   v,
   a,
@@ -127,16 +145,19 @@ function Welcome({
           </span>
           <Chevron />
         </button>
+        <button className="option" onClick={a.approve} disabled={!!v.busy}>
+          <span className="badge">
+            <FaceId />
+          </span>
+          <span className="text">
+            <span className="name">Use my Swish passkey</span>
+            <span className="sub">Already set up? No wallet needed</span>
+          </span>
+          <Chevron />
+        </button>
       </div>
       <Note text={note} />
-      {v.busy ? (
-        <Waiting text={v.busy} />
-      ) : (
-        <p className="fine" style={{ paddingTop: 20 }}>
-          Already have a Swish passkey?{" "}
-          <button onClick={a.approve}>Use it</button>
-        </p>
-      )}
+      {v.busy && <Waiting text={v.busy} />}
     </>
   );
 }
@@ -221,6 +242,7 @@ function Wallets({
       <p className="fine" style={{ paddingTop: 20 }}>
         Your wallet signs during setup. Later deposits use your passkey.
       </p>
+      {screen.purpose === "setup" && <HavePasskey v={v} a={a} />}
       {none && (
         <div className="actions">
           <Primary onClick={a.listWallets}>Look again</Primary>
@@ -350,6 +372,7 @@ function Limit({
             choose again
           </button>
         </p>
+        {screen.purpose === "setup" && <HavePasskey v={v} a={a} />}
         {screen.balance !== undefined &&
           Number(screen.balance) < Number(v.details?.amount ?? 0) && (
             <button
@@ -413,6 +436,7 @@ function Passkey({
             Test funds and network help
           </button>
         )}
+        {!retry && <HavePasskey v={v} a={a} />}
       </div>
     </>
   );
