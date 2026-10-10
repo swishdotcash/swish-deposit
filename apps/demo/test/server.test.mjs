@@ -246,6 +246,24 @@ describe("isolated demo routes", () => {
       ).status,
     ).toBe(200);
   });
+  it("limits new funding requests from one visitor, and never refuses a repeat of one already started", async () => {
+    let time = 0;
+    const handler = demoRoutes({ ...options, now: () => time });
+    const path = "/api/demo/funding/claims";
+    const here = { "x-forwarded-for": "203.0.113.7, 10.0.0.1" };
+    const ids = [randomUUID(), randomUUID(), randomUUID()];
+    for (const id of ids)
+      expect((await dispatch(handler, path, { wallet, id }, here)).status).toBe(200);
+    expect((await dispatch(handler, path, { wallet, id: ids[0] }, here)).status).toBe(200);
+    const refused = await dispatch(handler, path, { wallet, id: randomUUID() }, here);
+    expect(refused.status).toBe(429);
+    expect(refused.body.error.code).toBe("funding_limit");
+    expect(
+      (await dispatch(handler, path, { wallet, id: randomUUID() }, { "x-forwarded-for": "198.51.100.9" })).status,
+    ).toBe(200);
+    time = 60 * 60_000 + 1;
+    expect((await dispatch(handler, path, { wallet, id: randomUUID() }, here)).status).toBe(200);
+  });
   it("blocks mainnet and cross-site browser requests", async () => {
     expect(
       (

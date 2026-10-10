@@ -5,6 +5,35 @@ import { createFunding } from "./funding.mjs";
 import { createHandoffs } from "./handoffs.mjs";
 import { body, checkOrigin, DemoError, json } from "./http.mjs";
 
+// New funding requests one visitor, and all visitors together, may start in an
+// hour. Asking again about a request already started is never counted, so a
+// retry cannot be refused. Without this, one loop could empty the bank.
+const FUNDING_PER_VISITOR = 3;
+const FUNDING_PER_HOUR = 100;
+const HOUR = 60 * 60_000;
+const visitor = (req) =>
+  String(req.headers["x-forwarded-for"] ?? req.socket?.remoteAddress ?? "")
+    .split(",")[0]
+    .trim();
+
+function fundingLimit(now) {
+  const started = new Map(); // request ID -> { ip, at }
+  return (ip, id) => {
+    if (typeof id !== "string" || started.has(id)) return;
+    const since = now() - HOUR;
+    for (const [key, value] of started) if (value.at <= since) started.delete(key);
+    let mine = 0;
+    for (const value of started.values()) if (value.ip === ip) mine++;
+    if (mine >= FUNDING_PER_VISITOR || started.size >= FUNDING_PER_HOUR)
+      throw new DemoError(
+        429,
+        "funding_limit",
+        "Test funds were sent from here a few times already. Try again in an hour, or use a wallet that holds test USDC.",
+      );
+    started.set(id, { ip, at: now() });
+  };
+}
+
 // This route group belongs only to the demo host. It does not proxy secret-key APIs.
 export function demoRoutes({
   cluster,
@@ -12,12 +41,15 @@ export function demoRoutes({
   readDeposit,
   env = process.env,
   funding: suppliedFunding,
+  now = Date.now,
 }) {
+  const allowFunding = fundingLimit(now);
   const funding =
     suppliedFunding ??
     createFunding({
       source: createFundingSource({
         rpcUrl: env.DEMO_RPC_URL ?? "https://api.devnet.solana.com",
+        keypair: env.DEMO_FUNDING_KEYPAIR,
         keypairPath:
           env.DEMO_FUNDING_KEYPAIR_FILE ??
           resolve(homedir(), ".config/swish/devnet-bank.json"),
@@ -42,6 +74,7 @@ export function demoRoutes({
         json(res, 200, await funding.status());
       else if (req.method === "POST" && path === "/api/demo/funding/claims") {
         const input = await body(req);
+        allowFunding(visitor(req), input?.id);
         json(res, 200, await funding.claim(input?.wallet, input?.id));
       } else if (
         req.method === "GET" &&

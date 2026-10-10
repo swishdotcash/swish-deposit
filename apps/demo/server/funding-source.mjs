@@ -46,7 +46,9 @@ export function walletAddress(value) {
   }
 }
 
-export function createFundingSource({ rpcUrl, keypairPath }) {
+// `keypair` is the bank key itself (the JSON byte array `solana-keygen` writes),
+// for hosts that keep secrets in variables and have no file to point at.
+export function createFundingSource({ rpcUrl, keypairPath, keypair }) {
   const rpc = createSolanaRpc(rpcUrl);
   let signerPromise;
   let checkedNetwork;
@@ -71,9 +73,11 @@ export function createFundingSource({ rpcUrl, keypairPath }) {
   async function signer() {
     signerPromise ??= (async () => {
       try {
-        if ((await stat(keypairPath)).mode & 0o077)
+        if (!keypair && (await stat(keypairPath)).mode & 0o077)
           throw new Error("permissions");
-        const data = JSON.parse(await readFile(keypairPath, "utf8"));
+        const data = JSON.parse(
+          keypair ?? (await readFile(keypairPath, "utf8")),
+        );
         if (
           !Array.isArray(data) ||
           data.length !== 64 ||

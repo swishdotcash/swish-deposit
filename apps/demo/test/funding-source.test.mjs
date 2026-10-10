@@ -40,3 +40,28 @@ it("rejects another cluster before reading balances or preparing funds", async (
   });
   expect(getBalance).not.toHaveBeenCalled();
 });
+it("takes the bank key from a variable when there is no file", async () => {
+  createSolanaRpc.mockReturnValue({
+    getGenesisHash: () => send("EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"),
+    getBalance: () => send({ value: 0n }),
+    getAccountInfo: () => send({ value: null }),
+    getMinimumBalanceForRentExemption: () => send(2039280n),
+  });
+  const pair = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+  const seed = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey)).slice(-32);
+  const pub = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const source = createFundingSource({
+    rpcUrl: "https://devnet.invalid",
+    keypairPath: "/does/not/exist",
+    keypair: JSON.stringify([...seed, ...pub]),
+  });
+  const status = await source.status();
+  expect(status.available).toBe(true);
+  expect(status.ready).toBe(false);
+  expect(status.sourceAddress).toMatch(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/);
+});
+it("says funding needs configuration when there is neither a variable nor a readable file", async () => {
+  createSolanaRpc.mockReturnValue({});
+  const source = createFundingSource({ rpcUrl: "https://devnet.invalid", keypairPath: "/does/not/exist" });
+  await expect(source.status()).rejects.toMatchObject({ code: "funding_unavailable" });
+});

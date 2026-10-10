@@ -16,7 +16,7 @@ The page has two containers. The left container gives guidance for the current s
 
 ## Test funding
 
-There are no invite codes or wallet claim limits. Each request sends **10 test USDC and 0.02 devnet SOL**. The server uses the canonical Circle devnet USDC mint. It checks the RPC genesis hash before it prepares or sends funds.
+There are no invite codes. Each request sends **10 test USDC and 0.02 devnet SOL**. One visitor (by address) can start three new requests an hour, and all visitors together one hundred; asking again about a request already started is never refused. The server uses the canonical Circle devnet USDC mint. It checks the RPC genesis hash before it prepares or sends funds.
 
 The bank key stays on the server. By default, the demo uses the faucet prototype's bank file at `~/.config/swish/devnet-bank.json`. The file must have mode `600` and contain a 64-byte Solana keypair array. Keep this bank funded with devnet USDC and SOL. No mainnet funds are used.
 
@@ -26,6 +26,7 @@ Optional server settings:
 | --------------------------- | ----------------------------------- | ---------------------------------------- |
 | `DEMO_RPC_URL`              | `https://api.devnet.solana.com`     | Devnet RPC for funding and balance reads |
 | `DEMO_FUNDING_KEYPAIR_FILE` | `~/.config/swish/devnet-bank.json`  | Dedicated devnet bank                    |
+| `DEMO_FUNDING_KEYPAIR`      | not set                             | The bank key itself, instead of a file   |
 | `DEMO_FUNDING_JOURNAL`      | `~/.config/swish/demo-funding.json` | Persistent transfer records              |
 | `DEMO_PUBLIC_ORIGIN`        | Current browser origin              | Shared HTTPS origin used in QR links     |
 
