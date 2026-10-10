@@ -21,7 +21,6 @@ import {
 import { fromBase64, toBase64 } from "core/encoding";
 import type { DemoPasskeys } from "../passkeys";
 import { PasskeyDismissed, PasskeyUnsupported } from "core/passkey";
-import { PasskeyWindowBlocked } from "core/passkeyWindow";
 import {
   WalletRejected,
   type ConnectedWallet,
@@ -892,8 +891,7 @@ export class DepositFlow {
     const known =
       e instanceof ApiError ||
       e instanceof WalletRejected ||
-      e instanceof PasskeyUnsupported ||
-      e instanceof PasskeyWindowBlocked;
+      e instanceof PasskeyUnsupported;
     const final =
       e instanceof PasskeyUnsupported ||
       (e instanceof ApiError && e.code === "not_open");
