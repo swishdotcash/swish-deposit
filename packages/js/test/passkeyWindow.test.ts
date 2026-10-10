@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Approval } from "../src/api.js";
-import type { Passkeys } from "../src/passkey.js";
+import { PasskeyDismissed, type Passkeys } from "../src/passkey.js";
 import { PasskeyWindowBlocked, windowPasskeys } from "../src/passkeyWindow.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("passkey approval window", () => {
-  it("opens the passkey site on the first approval tap", async () => {
+  it("asks in the frame first, and opens the passkey site on the next tap if that came to nothing", async () => {
     const approval: Approval = {
       credentialId: "credential",
       authenticatorData: "authenticator",
@@ -28,16 +28,22 @@ describe("passkey approval window", () => {
     });
     vi.stubGlobal("location", { origin: "http://localhost:5174" });
     const inFrame: Passkeys = {
-      approve: vi.fn(async () => { throw new Error("approval must open in the window"); }),
+      approve: vi.fn(async () => {
+        throw new PasskeyDismissed();
+      }),
       create: vi.fn(async () => {
         throw new Error("not used");
       }),
     };
     const passkeys = windowPasskeys(inFrame, "http://localhost:5174/passkey.html", "light");
 
+    await expect(passkeys.approve("first-challenge", "localhost")).rejects.toBeInstanceOf(PasskeyDismissed);
+    expect(inFrame.approve).toHaveBeenCalledOnce();
+    expect(open).not.toHaveBeenCalled();
+
     const next = passkeys.approve("fresh-challenge", "localhost");
     expect(open).toHaveBeenCalledOnce();
-    expect(inFrame.approve).not.toHaveBeenCalled();
+    expect(inFrame.approve).toHaveBeenCalledOnce();
     const url = new URL(open.mock.calls[0]![0]);
     expect(url.searchParams.get("action")).toBe("approve");
     expect(url.searchParams.get("rp")).toBe("localhost");
@@ -52,12 +58,30 @@ describe("passkey approval window", () => {
     expect(listeners.has("message")).toBe(false);
   });
 
-  it("reports a blocked window without asking inside the frame", async () => {
-    vi.stubGlobal("window", { screenX: 0, screenY: 0, outerWidth: 1200, outerHeight: 800, open: () => null });
-    const inFrame: Passkeys = { approve: vi.fn(), create: vi.fn() };
+  it("approves in the frame, with no window, where the frame can ask", async () => {
+    const approval: Approval = { credentialId: "c", authenticatorData: "a", clientDataJson: "d", signature: "s" };
+    const open = vi.fn();
+    vi.stubGlobal("window", { screenX: 0, screenY: 0, outerWidth: 1200, outerHeight: 800, open });
+    const inFrame: Passkeys = { approve: vi.fn(async () => approval), create: vi.fn() };
     const passkeys = windowPasskeys(inFrame, "http://localhost:5174/passkey.html", "light");
 
+    await expect(passkeys.approve("one", "localhost")).resolves.toEqual(approval);
+    await expect(passkeys.approve("two", "localhost")).resolves.toEqual(approval);
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("reports a blocked window once the frame has failed", async () => {
+    vi.stubGlobal("window", { screenX: 0, screenY: 0, outerWidth: 1200, outerHeight: 800, open: () => null });
+    const inFrame: Passkeys = {
+      approve: vi.fn(async () => {
+        throw new PasskeyDismissed();
+      }),
+      create: vi.fn(),
+    };
+    const passkeys = windowPasskeys(inFrame, "http://localhost:5174/passkey.html", "light");
+
+    await expect(passkeys.approve("challenge", "localhost")).rejects.toBeInstanceOf(PasskeyDismissed);
     await expect(passkeys.approve("challenge", "localhost")).rejects.toBeInstanceOf(PasskeyWindowBlocked);
-    expect(inFrame.approve).not.toHaveBeenCalled();
+    expect(inFrame.approve).toHaveBeenCalledOnce();
   });
 });

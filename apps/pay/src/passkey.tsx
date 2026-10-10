@@ -46,7 +46,7 @@ function PasskeyWindow() {
     } catch (e) {
       // A closed prompt can be tried again in this window.
       if (!(e instanceof PasskeyUnsupported)) {
-        return setState({ name: "idle", note: action === "approve" ? "Touch ID did not finish. Try again." : "The passkey was not created. Try again." });
+        return setState({ name: "idle", note: action === "approve" ? `${unlock.charAt(0).toUpperCase()}${unlock.slice(1)} did not finish. Try again.` : "The passkey was not created. Try again." });
       }
       tell({ swishPasskey: "unsupported", nonce, message: e.message });
       setState({ name: "idle", note: e.message });

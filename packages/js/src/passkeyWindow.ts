@@ -1,6 +1,9 @@
 /**
- * Ask for deposit approval in a small Swish window. Some browsers do not show
- * a passkey prompt inside the frame. Passkey creation can also use the window.
+ * A small Swish window for the passkey, for when the frame could not ask.
+ * Some browsers do not show a passkey prompt inside a frame, and a new
+ * passkey may only be asked for within a few seconds of a tap. A window of
+ * our own has neither limit. The frame is always tried first: where it works
+ * the user sees one prompt and no window.
  */
 import type { Approval } from "./api.js";
 import { PasskeyDismissed, PasskeyUnsupported, type NewPasskey, type Passkeys } from "./passkey.js";
@@ -60,11 +63,22 @@ function askInWindow<T>(
   });
 }
 
-/** Ask for deposit approval on Swish's page, from the first tap. */
+/**
+ * `inFrame` makes the first attempt at both. If that attempt comes to
+ * nothing, the next one opens the window.
+ */
 export function windowPasskeys(inFrame: Passkeys, pageUrl: string, theme: Theme): Passkeys {
+  let approveInWindow = false;
   let createInWindow = false;
   return {
+    // Call straight from a tap: browsers only open a window then.
     approve(challenge, rpId) {
+      if (!approveInWindow) {
+        return inFrame.approve(challenge, rpId).catch((e: unknown) => {
+          if (e instanceof PasskeyDismissed) approveInWindow = true;
+          throw e;
+        });
+      }
       return askInWindow<Approval>(
         pageUrl,
         theme,
