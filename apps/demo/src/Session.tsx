@@ -514,7 +514,18 @@ export function Session({
           />
         ) : (
           <div className="card" aria-label="Swish deposit">
-            <TopBar onClose={close} locked={locked} />
+            <TopBar
+              onClose={close}
+              onBack={
+                flow.canGoBack
+                  ? () => {
+                      setStage(null);
+                      flow.back();
+                    }
+                  : undefined
+              }
+              locked={locked}
+            />
             {remoteEntry ? (
               <>
                 <AmountBlock

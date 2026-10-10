@@ -131,8 +131,22 @@ export function limitChoices(need: number): string[] {
   return (fit.length ? fit : [Math.ceil(need)]).map(String);
 }
 
+/** Screens where the user decides what happens next. "Back" moves between these. */
+const RESTING = new Set<Screen["name"]>([
+  "confirm",
+  "not_found",
+  "source",
+  "wallets",
+  "limit",
+  "passkey",
+]);
+/** Screens shown once something has been signed or sent. */
+const COMMITS = new Set<Screen["name"]>(["signing", "ready", "succeeded"]);
+
 export class DepositFlow {
   private current: Screen = { name: "loading" };
+  /** The steps the user has been shown and can return to, oldest first. */
+  private trail: { screen: Screen; purpose: Purpose; adding: boolean }[] = [];
   private listeners = new Set<(s: Screen) => void>();
   private challenge: Challenge | null = null;
   private loading: Promise<Challenge> | null = null;
@@ -551,7 +565,32 @@ export class DepositFlow {
   private show(screen: Screen): void {
     if (this.disposed) return;
     this.current = screen;
+    if (RESTING.has(screen.name)) {
+      const step = { screen, purpose: this.purpose, adding: this.adding };
+      // The same screen again (a note, a refreshed list) is still one step.
+      if (this.trail.at(-1)?.screen.name === screen.name)
+        this.trail[this.trail.length - 1] = step;
+      else this.trail.push(step);
+    } else if (COMMITS.has(screen.name)) {
+      // Something was signed or sent: the steps before it cannot be redone.
+      this.trail = [];
+    }
     for (const l of this.listeners) l(screen);
+  }
+
+  /** Whether there is an earlier step to return to from this screen. */
+  get canGoBack(): boolean {
+    return RESTING.has(this.current.name) && this.trail.length > 1;
+  }
+
+  /** Returns to the step before this one. Nothing is signed or sent by it. */
+  back(): void {
+    if (!this.canGoBack) return;
+    this.trail.pop();
+    const step = this.trail.pop()!;
+    this.purpose = step.purpose;
+    this.adding = step.adding;
+    this.show(step.screen);
   }
 
   /** The cached challenge, if it will outlive a Face ID prompt. */

@@ -135,14 +135,38 @@ export const Spinner = () => <span className="spinner" aria-hidden="true" />;
 
 export function TopBar({
   onClose,
+  onBack,
   locked,
 }: {
   onClose: () => void;
+  /** Present when there is an earlier step to return to. */
+  onBack?: (() => void) | undefined;
   locked: boolean;
 }) {
   return (
     <div className="widget-top">
-      <Logo />
+      <div className="widget-top-start">
+        {onBack && (
+          <button
+            className="back"
+            onClick={onBack}
+            disabled={locked}
+            aria-label="Back to the last step"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <path
+                d="M7.5 2L3.5 6l4 4"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        )}
+        <Logo />
+      </div>
       <button
         className="close"
         onClick={onClose}

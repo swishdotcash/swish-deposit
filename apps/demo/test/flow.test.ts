@@ -324,3 +324,34 @@ it("does not send a funded wallet to limit setup after a source lookup fails", a
   expect(w.flow.source).toMatchObject({ balance: "10", left: "1000" });
   expect(w.wallets.connect).not.toHaveBeenCalled();
 });
+it("goes back one step at a time through setup, and not past something already signed", async () => {
+  const w = world();
+  await w.flow.start();
+  expect(w.flow.canGoBack).toBe(false);
+  w.flow.setUp();
+  expect(w.flow.screen.name).toBe("wallets");
+  expect(w.flow.canGoBack).toBe(true);
+  await w.flow.pickWallet("Demo Wallet");
+  expect(w.flow.screen.name).toBe("limit");
+  await w.flow.chooseLimit("1000");
+  expect(w.flow.screen.name).toBe("passkey");
+
+  w.flow.back();
+  expect(w.flow.screen.name).toBe("limit");
+  w.flow.back();
+  expect(w.flow.screen.name).toBe("wallets");
+  w.flow.back();
+  expect(w.flow.screen.name).toBe("confirm");
+  expect(w.flow.canGoBack).toBe(false);
+  w.flow.back();
+  expect(w.flow.screen.name).toBe("confirm");
+
+  // Forward again works from where "back" left off.
+  w.flow.setUp();
+  await w.flow.pickWallet("Demo Wallet");
+  await w.flow.chooseLimit("1000");
+  await w.flow.createPasskey();
+  expect(w.flow.screen.name).toBe("ready");
+  expect(w.flow.canGoBack).toBe(false);
+  expect(w.api.registerPasskey).toHaveBeenCalledTimes(1);
+});

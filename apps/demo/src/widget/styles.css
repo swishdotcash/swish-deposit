@@ -23,6 +23,25 @@
 .close:disabled {
   opacity: 0.35;
 }
+.widget-top-start {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.back {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) var(--close), transparent);
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+.back:disabled {
+  opacity: 0.35;
+}
 
 /* ---- setup: steps, heading ---- */
 .steps {
