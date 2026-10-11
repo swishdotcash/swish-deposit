@@ -120,6 +120,4 @@ Everything in this repo was built for the Colosseum Crypto World's Fair hackatho
 
 Two pieces exist only to serve the playground and are labelled `DEMO ONLY` in the code: the `GET /v1/deposits` list route in the API, and `/api/balance` in the playground's server. A real app should credit its users from the webhook.
 
-## Team
-
-Built by the Swish team: Karan Parsnani, Aarya Sudarshan and Fuad Tausif. The playground was built with Jayesh Potlabattini.
+The playground was built with Jayesh Potlabattini.
