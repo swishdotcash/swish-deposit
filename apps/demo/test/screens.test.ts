@@ -7,7 +7,7 @@ import {
   type Actions,
   type View,
 } from "../src/widget/screens";
-import { deviceUrl, fundWallet } from "../src/demo-api";
+import { deviceUrl, fundWallet, untilFundsAreSeen } from "../src/demo-api";
 const wallet = "CG1gKGxUuRHKAnYiTzVbf6aWkFJUyBtCqy5MSFLoHhFk";
 const view: View = {
   details: {
@@ -141,4 +141,18 @@ it("offers the existing passkey at every setup step, until this browser knows th
   expect(
     html(fresh, { name: "wallets", purpose: "raise", wallets: [{ name: "Phantom", icon: "data:," }] } as never),
   ).not.toContain("Already have a Swish passkey?");
+});
+it("waits for the deposit API to see test funds, and gives up after its tries", async () => {
+  const sleep = vi.fn(async () => {});
+  const answers = [{ balance: "0" }, { balance: "0" }, { balance: "10" }];
+  const read = vi.fn(async () => answers.shift() ?? { balance: "10" });
+  await expect(untilFundsAreSeen(read, 5, { sleep })).resolves.toBe(true);
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(sleep).toHaveBeenCalledTimes(2);
+
+  const never = vi.fn(async () => {
+    throw new Error("unreachable");
+  });
+  await expect(untilFundsAreSeen(never, 5, { tries: 3, sleep })).resolves.toBe(false);
+  expect(never).toHaveBeenCalledTimes(3);
 });

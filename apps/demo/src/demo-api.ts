@@ -147,3 +147,25 @@ export function deviceUrl(token: string, origin: string): string {
   url.hash = new URLSearchParams({ deposit: token }).toString();
   return url.href;
 }
+
+/**
+ * Test funds confirm in a second or two, but the deposit API reads the chain a
+ * little behind that, so for a few seconds it still sees an empty wallet and
+ * refuses setup. Ask it until it sees the funds, or stop after `tries`.
+ */
+export async function untilFundsAreSeen(
+  read: () => Promise<{ balance?: string | undefined }>,
+  amount: number,
+  {
+    tries = 15,
+    waitMs = 2000,
+    sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+  } = {},
+): Promise<boolean> {
+  for (let i = 0; i < tries; i++) {
+    const seen = await read().catch(() => null);
+    if (seen && Number(seen.balance ?? 0) >= amount) return true;
+    if (i < tries - 1) await sleep(waitMs);
+  }
+  return false;
+}

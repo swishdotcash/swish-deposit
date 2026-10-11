@@ -19,6 +19,7 @@ import {
   deviceUrl,
   linkAction,
   readBalance,
+  untilFundsAreSeen,
   type Config,
   type DeviceLink,
   type LinkStatus,
@@ -131,9 +132,18 @@ export function Session({
         wallets,
         passkeys: demoPasskeys(),
         beforeSetup: async (wallet) => {
-          const balance = await readBalance(wallet.address).catch(() => null);
-          if (!balance || Number(balance.usdc) < Number(amount))
+          let balance = await readBalance(wallet.address).catch(() => null);
+          if (!balance || Number(balance.usdc) < Number(amount)) {
             await openFunds(wallet);
+            balance = await readBalance(wallet.address).catch(() => null);
+          }
+          // Only for a wallet that does hold the funds: one that does not
+          // should hear so at once, not after a wait.
+          if (balance && Number(balance.usdc) >= Number(amount))
+            await untilFundsAreSeen(
+              () => api.allowance("funds-check", wallet.address),
+              Number(amount),
+            );
         },
       }),
   );
