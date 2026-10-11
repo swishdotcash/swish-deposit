@@ -13,7 +13,6 @@ import { parseArgs } from "node:util";
 
 import {
   AccountRole,
-  address,
   appendTransactionMessageInstruction,
   createKeyPairSignerFromBytes,
   createSolanaRpc,
@@ -28,8 +27,9 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from "@solana/kit";
+import { programId } from "./program-config.js";
 
-const PROGRAM_ID = address("D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p");
+const PROGRAM_ID = programId();
 
 const CLUSTERS: Record<string, { http: string; ws: string }> = {
   devnet: { http: "https://api.devnet.solana.com", ws: "wss://api.devnet.solana.com" },

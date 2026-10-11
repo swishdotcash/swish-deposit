@@ -380,7 +380,7 @@ export class SolanaChain implements Chain {
   }
 
   private async message(instructions: Instruction[], feePayer: TransactionSigner = this.sponsor) {
-    const { value: blockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: blockhash } = await this.rpc.getLatestBlockhash({ commitment: "confirmed" }).send();
     return pipe(
       createTransactionMessage({ version: 0 }),
       (m) => setTransactionMessageFeePayerSigner(feePayer, m),

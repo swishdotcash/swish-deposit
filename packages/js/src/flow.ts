@@ -20,6 +20,7 @@ import {
 } from "./api.js";
 import { fromBase64, toBase64 } from "./encoding.js";
 import { PasskeyDismissed, PasskeyUnsupported, type Passkeys } from "./passkey.js";
+import { PasskeyWindowBlocked } from "./passkeyWindow.js";
 import { WalletRejected, type ConnectedWallet, type WalletOption, type Wallets } from "./wallet.js";
 
 export type Purpose = "setup" | "raise";
@@ -595,7 +596,7 @@ export class DepositFlow {
   }
 
   private fail(e: unknown, again: () => void): void {
-    const known = e instanceof ApiError || e instanceof WalletRejected || e instanceof PasskeyUnsupported;
+    const known = e instanceof ApiError || e instanceof WalletRejected || e instanceof PasskeyUnsupported || e instanceof PasskeyWindowBlocked;
     const final = e instanceof PasskeyUnsupported || (e instanceof ApiError && e.code === "not_open");
     this.again = final ? null : again;
     this.show({

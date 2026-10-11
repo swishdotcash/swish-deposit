@@ -1,5 +1,5 @@
 import { p256 } from "@noble/curves/nist.js";
-import { getAddressDecoder } from "@solana/kit";
+import { address, getAddressDecoder } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
 import { pullChallenge, sha256 } from "../src/chain/program.js";
@@ -21,6 +21,7 @@ describe("the challenge", () => {
   it("is exactly what the program hashes (same vector as tests/pull.rs)", () => {
     const hash = pullChallenge({
       clusterTag: bytes(1, 32),
+      programId: address("D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p"),
       depositId: bytes(5, 16),
       appId: bytes(6, 16),
       mint: addr(3),
@@ -93,4 +94,3 @@ describe("amounts", () => {
     expect(() => toBaseUnits("1e3", 6)).toThrow();
   });
 });
-

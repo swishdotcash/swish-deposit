@@ -16,7 +16,16 @@
  */
 import { createHmac } from "node:crypto";
 
-import { address, createNoopSigner, type Address, getBase64Decoder, getBase64Encoder, isAddress } from "@solana/kit";
+import {
+  SOLANA_ERROR__TRANSACTION_ERROR__BLOCKHASH_NOT_FOUND,
+  address,
+  createNoopSigner,
+  type Address,
+  getBase64Decoder,
+  getBase64Encoder,
+  isAddress,
+  isSolanaError,
+} from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
 import {
   getCreateFixedDelegationOverlayInstructionAsync,
@@ -93,6 +102,18 @@ const submitBody = z.object({
   transaction: z.string().min(1),
   token: z.string().min(1),
 });
+
+/** RPC wraps an expired blockhash error inside a simulation error. */
+function blockhashExpired(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    if (isSolanaError(current, SOLANA_ERROR__TRANSACTION_ERROR__BLOCKHASH_NOT_FOUND)) return true;
+    seen.add(current);
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
+}
 
 export function setupRouter(deps: Deps): Router {
   const router = Router();
@@ -422,10 +443,20 @@ export function setupRouter(deps: Deps): Router {
         throw new HttpError(429, "setup_limit", "Too many setup transactions for this deposit. Start a new deposit.");
       }
     }
-    const signature = await chain.sendWalletSigned(tx);
+    let signature: string;
+    try {
+      signature = await chain.sendWalletSigned(tx);
+    } catch (e) {
+      if (!blockhashExpired(e)) throw e;
+      // An expired transaction never reached the chain, so it did not use
+      // one of the setup transactions this deposit may ask Swish to pay for.
+      if (depositId !== UNLINK) {
+        await db.query("update deposits set setup_txs = greatest(setup_txs - 1, 0) where id = $1", [depositId]);
+      }
+      throw new HttpError(409, "transaction_expired", "The wallet approval took too long. Try again and sign within one minute.");
+    }
     res.json({ signature });
   });
 
   return router;
 }
-

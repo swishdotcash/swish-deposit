@@ -5,7 +5,7 @@
 import type { Approval } from "./api.js";
 import { fromBase64Url, toBase64Url } from "./encoding.js";
 
-/** Face ID was closed, timed out, or no passkey was found: browsers do not say which. */
+/** The passkey request did not finish. This can include a blocked frame prompt. */
 export class PasskeyDismissed extends Error {}
 
 /** This browser or device cannot use passkeys. */

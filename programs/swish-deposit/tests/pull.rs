@@ -1064,7 +1064,7 @@ fn a_receipt_closes_only_after_its_deadline_and_the_deposit_cannot_come_back() {
 /// the server and the program must hash exactly the same bytes.
 #[test]
 fn the_challenge_matches_the_apis() {
-    let program_id = swish_deposit::ID;
+    let program_id = Pubkey::from_str_const("D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p");
     let mint = Pubkey::new_from_array([3u8; 32]);
     let destination = Pubkey::new_from_array([4u8; 32]);
     let hash = PullChallenge {

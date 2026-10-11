@@ -11,8 +11,9 @@
   ],
   "scripts": {
     "probe:foundation": "tsx scripts/probe-foundation.ts",
-    "program:build": "cd programs/swish-deposit && cargo-build-sbf --tools-version v1.52 --sbf-out-dir ../../target/deploy && rm -f ../../target/deploy/swish_deposit-keypair.json",
-    "program:test": "npm run program:build && cargo test -p swish-deposit",
+    "program:configure": "tsx scripts/configure-program.ts",
+    "program:build": "tsx scripts/build-program.ts",
+    "program:test": "tsx scripts/build-program.ts --test",
     "program:initialize": "tsx scripts/initialize.ts",
     "program:set-rp-id": "tsx scripts/set-rp-id.ts"
   },
@@ -22,6 +23,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "dotenv": "^18.0.4",
     "@solana-program/system": "^0.13.0",
     "@solana-program/token": "^0.15.0",
     "@solana/kit": "^7.1.1",

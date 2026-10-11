@@ -7,3 +7,4 @@ target
 .keys
 test-ledger
 .anchor
+/Anchor.toml

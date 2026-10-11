@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 
 import { PGlite } from "@electric-sql/pglite";
-import { generateKeyPairSigner, getAddressDecoder, type Address, type Instruction, type KeyPairSigner } from "@solana/kit";
+import {
+  SOLANA_ERROR__TRANSACTION_ERROR__BLOCKHASH_NOT_FOUND,
+  SolanaError,
+  generateKeyPairSigner,
+  getAddressDecoder,
+  type Address,
+  type Instruction,
+  type KeyPairSigner,
+} from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -100,8 +108,10 @@ class FakeChain implements Chain {
     return { messageBytes: new Uint8Array([4, 5, 6]), signatures: { [addr(40)]: new Uint8Array(64) } } as never;
   }
   walletSigned = 0;
+  walletSignedError: Error | null = null;
   async sendWalletSigned() {
     this.walletSigned++;
+    if (this.walletSignedError) throw this.walletSignedError;
     return "5etup";
   }
 }
@@ -612,6 +622,28 @@ describe("setup", () => {
     await w.deps.db.query("update deposits set status = 'succeeded' where id = $1", [d2.id]);
     expect((await widget("/v1/setup/wallet/submit", { transaction: "AAAA", token: t2 })).status).toBe(429);
     expect(w.chain.walletSigned).toBe(5);
+  });
+
+  it("reports an expired wallet transaction and lets setup retry with a fresh one", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    const first = await prepare(user, d);
+    const submit = (token: string) => widget("/v1/setup/wallet/submit", { transaction: "AAAA", token });
+    w.chain.walletSignedError = Object.assign(new Error("Transaction simulation failed"), {
+      cause: new SolanaError(SOLANA_ERROR__TRANSACTION_ERROR__BLOCKHASH_NOT_FOUND),
+    });
+
+    const expired = await submit(first.body.token);
+    expect(expired.status).toBe(409);
+    expect(expired.body.error).toMatchObject({ code: "transaction_expired" });
+    expect(expired.body.error.message).toMatch(/wallet approval took too long/i);
+    const counted = await w.deps.db.query<{ setup_txs: number }>("select setup_txs from deposits where id = $1", [d.id]);
+    expect(counted.rows[0]?.setup_txs).toBe(0);
+
+    w.chain.walletSignedError = null;
+    const fresh = await prepare(user, d);
+    expect(fresh.status).toBe(200);
+    expect((await submit(fresh.body.token)).status).toBe(200);
   });
 
   it("limits setup calls per IP", async () => {

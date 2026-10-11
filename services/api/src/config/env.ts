@@ -4,6 +4,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.coerce.number().int().positive().default(4100),
   CLUSTER: z.enum(["devnet", "mainnet"]).default("devnet"),
+  SWISH_PROGRAM_ID: z.string().min(32),
   RPC_URL: z.string().url(),
   DATABASE_URL: z.string().min(1),
   SPONSOR_SECRET_KEY: z.string().min(1),

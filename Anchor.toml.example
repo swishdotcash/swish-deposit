@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-swish_deposit = "D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p"
+swish_deposit = "__SWISH_PROGRAM_ID__"
 
 [programs.devnet]
-swish_deposit = "D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p"
+swish_deposit = "__SWISH_PROGRAM_ID__"
 
 [provider]
 cluster = "localnet"

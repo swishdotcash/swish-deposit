@@ -25,7 +25,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p");
+include!(concat!(env!("OUT_DIR"), "/program_id.rs"));
 
 #[program]
 pub mod swish_deposit {

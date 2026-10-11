@@ -33,7 +33,7 @@ function open(m: Extract<ToFrame, { swish: "open" }>, page: string) {
     {
       // The API lets this frame in only for a page the app registered.
       api: createApi(m.publishableKey, m.apiUrl, page),
-      // A new passkey is made in a window of our own; deposits are approved here.
+      // The frame asks for the passkey first; a Swish window is used if that fails.
       passkeys: windowPasskeys(browserPasskeys(), `${location.origin}/passkey.html`, theme),
       wallets: browserWallets(m.cluster),
       memory,

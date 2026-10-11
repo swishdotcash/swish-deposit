@@ -33,8 +33,9 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
 } from "@solana/kit";
+import { programId } from "./program-config.js";
 
-const PROGRAM_ID = address("D2JKE48xP76LQkr1fn41LM8nxG74uKohAXy5SEoPaL3p");
+const PROGRAM_ID = programId();
 const LOADER_UPGRADEABLE = address("BPFLoaderUpgradeab1e11111111111111111111111");
 const SYSTEM_PROGRAM = address("11111111111111111111111111111111");
 
