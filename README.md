@@ -2,6 +2,8 @@
 
 Link, for crypto. A user sets up once, then deposits into any Solana app with one Face ID or Touch ID.
 
+**▶ [Watch the 2-minute pitch](https://youtu.be/Iau7RB1Bcqw)** · [Deck](https://swish.cash/pitch)
+
 Depositing into a Solana app today means connecting a wallet, signing a message and approving a transaction, or copying an address by hand, every time. With Swish Deposit the user creates a passkey and sets a spending limit on their own wallet once. After that, a deposit into any app that uses the button is one passkey prompt. There is no wallet pop-up, and Swish never holds the funds.
 
 **Try it:** [demo.swish.cash](https://demo.swish.cash). It runs on devnet with a demo wallet, so it needs no funds and no setup.
