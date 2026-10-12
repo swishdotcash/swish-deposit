@@ -116,7 +116,7 @@ To build or deploy the program under your own address, see [docs/local-program-i
 
 ## Hackathon note
 
-Everything in this repo was built for the Colosseum Crypto World's Fair hackathon, starting on 28 September 2026. [Swish](https://swish.cash), our private payments app, has been live on Solana mainnet since May 2026 and is separate, prior work.
+Everything in this repo was built for the Colosseum Crypto World's Fair hackathon, starting on 28 September 2026. [Swish](https://swish.cash), our private payments app, has been live on Solana mainnet since January 2026 and is separate, prior work.
 
 Two pieces exist only to serve the playground and are labelled `DEMO ONLY` in the code: the `GET /v1/deposits` list route in the API, and `/api/balance` in the playground's server. A real app should credit its users from the webhook.
 
