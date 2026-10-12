@@ -6,6 +6,8 @@ Depositing into a Solana app today means connecting a wallet, signing a message 
 
 **Try it:** [demo.swish.cash](https://demo.swish.cash). It runs on devnet with a demo wallet, so it needs no funds and no setup.
 
+**Watch the pitch:** [2-minute video](https://youtu.be/Iau7RB1Bcqw) · [deck](https://swish.cash/pitch)
+
 > Status: devnet only, and not audited. Do not use it with real funds.
 
 ## How it works
