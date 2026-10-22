@@ -82,7 +82,7 @@ pub mod swish_deposit {
         instructions::pull::handle_pull(ctx, args)
     }
 
-    /// Anyone, once the deposit's deadline has passed.
+    /// Deprecated: always rejects because receipts are permanent spent markers.
     pub fn close_receipt(ctx: Context<CloseReceipt>) -> Result<()> {
         instructions::pull::handle_close_receipt(ctx)
     }

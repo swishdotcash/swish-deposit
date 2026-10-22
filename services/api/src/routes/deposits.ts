@@ -8,13 +8,14 @@ import { z } from "zod";
 import { fromBaseUnits, toBaseUnits } from "../amount.js";
 import { currentApp, requirePublishableKey, requireSecretKey } from "../auth.js";
 import { ChainError } from "../chain/client.js";
-import { PROGRAM_ID, pullChallenge, pullInstruction, receiptPda, swishIdPda, uuidBytes } from "../chain/program.js";
+import { PROGRAM_ID, pullChallenge, pullInstruction, swishIdPda, uuidBytes } from "../chain/program.js";
 import { PasskeyError, b64url, fromB64url, secp256r1Instruction, verifyAssertion } from "../chain/webauthn.js";
 import { MIN_DEPOSIT, SIGNATURE_LIFETIME_SECONDS, USDC_DECIMALS, type AppRow, type Deps } from "../context.js";
 import type { Db } from "../db.js";
 import { HttpError, badRequest, notFound } from "../http.js";
 import { hashKey, newClientSecret, safeEqual } from "../keys.js";
 import { sendWebhook } from "../webhooks.js";
+import { reconcileDeposit } from "../settlement.js";
 
 export interface DepositRow {
   id: string;
@@ -30,6 +31,7 @@ export interface DepositRow {
   swish_id: string | null;
   wallet: string | null;
   signature: string | null;
+  last_valid_block_height: string | null;
   error: string | null;
   setup_wallet: string | null;
   setup_new_wallet: boolean;
@@ -181,19 +183,28 @@ export function depositsRouter(deps: Deps): Router {
   });
 
   router.get("/v1/deposits/:id", secret, async (req, res) => {
-    res.json(depositView(await reconcile(await load(String(req.params.id), currentApp(res)))));
+    const app = currentApp(res);
+    const d = await reconcileDeposit(deps, await load(String(req.params.id), app));
+    await sendWebhook(deps, app, d);
+    res.json(depositView(d));
   });
 
   // ---- The widget (publishable key + the deposit's client secret) ----
 
-  /** What Face ID signs. Asking again replaces the previous one. */
+  /** What Face ID signs. Older approvals remain cryptographically valid until
+   * their own deadlines; the permanent receipt prevents duplicate execution. */
   router.post("/v1/deposits/:id/challenge", publishable, async (req, res) => {
     const app = currentApp(res);
     const { client_secret } = widgetBody.parse(req.body);
     let d = await loadForWidget(String(req.params.id), client_secret, res);
     if (d.status !== "created") throw new HttpError(409, "not_open", `this deposit is ${d.status}`);
     const expiresAt = new Date(Math.floor(Date.now() / 1000 + SIGNATURE_LIFETIME_SECONDS) * 1000);
-    d = await update(d.id, { expires_at: expiresAt });
+    const refreshed = await db.query<DepositRow>(
+      "update deposits set expires_at = $2, updated_at = now() where id = $1 and status = 'created' returning *",
+      [d.id, expiresAt],
+    );
+    if (!refreshed.rows[0]) throw new HttpError(409, "not_open", "this deposit is no longer open");
+    d = refreshed.rows[0];
     res.json({
       challenge: b64url(await challengeFor(d)),
       rp_id: deps.rpId,
@@ -262,32 +273,43 @@ export function depositsRouter(deps: Deps): Router {
       prepared = await prepareSubmit(deposit, body);
     } catch (e) {
       // Nothing was sent: the user can try again.
-      await update(deposit.id, { status: "created" });
+      await db.query(
+        "update deposits set status = 'created', updated_at = now() where id = $1 and status = 'submitted' and signature is null",
+        [deposit.id],
+      );
       if (e instanceof PasskeyError) throw badRequest("passkey_rejected", e.message);
       throw e;
     }
 
-    let final: DepositRow;
+    // Save the payer before signing, then save the transaction's identity and
+    // lifetime before the FIRST broadcast. A restart can reconcile either stage.
+    const { rows: ready } = await db.query<DepositRow>(
+      `update deposits set swish_id = $2, wallet = $3, updated_at = now()
+       where id = $1 and status = 'submitted' and signature is null returning *`,
+      [deposit.id, prepared.swishId, prepared.wallet],
+    );
+    if (!ready[0]) {
+      const settled = await load(deposit.id, app);
+      await sendWebhook(deps, app, settled);
+      res.json(depositView(settled));
+      return;
+    }
+    let pending = ready[0];
     try {
-      const signature = await chain.send(prepared.instructions);
-      final = await update(deposit.id, {
-        status: "succeeded",
-        signature,
-        swish_id: prepared.swishId,
-        wallet: prepared.wallet,
+      await chain.send(prepared.instructions, async ({ signature, lastValidBlockHeight }) => {
+        const { rows } = await db.query<DepositRow>(
+          `update deposits set signature = $2, last_valid_block_height = $3, updated_at = now()
+           where id = $1 and status = 'submitted' and signature is null returning *`,
+          [deposit.id, signature, lastValidBlockHeight.toString()],
+        );
+        if (!rows[0]) throw new Error("deposit is no longer awaiting broadcast");
+        pending = rows[0];
       });
     } catch (e) {
-      const signature = e instanceof ChainError ? (e.signature ?? null) : null;
-      const settled = await chain.exists(await receiptPda(uuidBytes(deposit.id)));
-      final = await update(deposit.id, {
-        status: settled ? "succeeded" : "failed",
-        signature,
-        swish_id: prepared.swishId,
-        wallet: prepared.wallet,
-        error: settled ? null : (e as Error).message.slice(0, 500),
-      });
+      console.warn(`[deposit] ${deposit.id}: ${e instanceof ChainError ? "broadcast outcome requires reconciliation" : "submission interrupted"}`);
     }
-    void sendWebhook(deps, app, final);
+    const final = await reconcileDeposit(deps, pending);
+    await sendWebhook(deps, app, final);
     res.json(depositView(final));
   });
 
@@ -373,13 +395,6 @@ export function depositsRouter(deps: Deps): Router {
       ),
     ];
     return { instructions, swishId, wallet: source.wallet };
-  }
-
-  /** A submit that timed out may still have landed: the receipt says so. */
-  async function reconcile(d: DepositRow): Promise<DepositRow> {
-    if (d.status !== "submitted") return d;
-    if (await chain.exists(await receiptPda(uuidBytes(d.id)))) return update(d.id, { status: "succeeded" });
-    return d;
   }
 
   return router;

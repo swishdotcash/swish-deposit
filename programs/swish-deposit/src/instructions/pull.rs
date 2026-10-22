@@ -115,17 +115,20 @@ pub fn handle_pull<'info>(ctx: Context<'info, Pull<'info>>, args: PullArgs) -> R
     let wallet = accounts.linked_wallet.wallet;
     check_delegation(accounts, args.kind, &wallet)?;
 
-    let challenge = PullChallenge {
+    let mint = accounts.mint.key();
+    let destination = accounts.receiver.key();
+    let approved_payment = PullChallenge {
         cluster_tag: &accounts.config.cluster_tag,
         program_id: ctx.program_id,
         deposit_id: &args.deposit_id,
         app_id: &accounts.app.app_id,
-        mint: &accounts.mint.key(),
-        destination: &accounts.receiver.key(),
+        mint: &mint,
+        destination: &destination,
         amount: args.amount,
         expires_at: args.expires_at,
-    }
-    .hash();
+    };
+    let challenge = approved_payment.hash();
+    let commitment = approved_payment.payment_commitment();
     verify_passkey_approval(
         &accounts.instructions.to_account_info(),
         PasskeyApproval {
@@ -141,6 +144,9 @@ pub fn handle_pull<'info>(ctx: Context<'info, Pull<'info>>, args: PullArgs) -> R
     receipt.expires_at = args.expires_at;
     receipt.rent_payer = ctx.accounts.payer.key();
     receipt.bump = ctx.bumps.receipt;
+    receipt.commitment = commitment;
+    receipt.wallet = wallet;
+    receipt.swish_id = ctx.accounts.swish_id.key();
 
     let accounts = &ctx.accounts;
     let transfer_data = TransferData {
@@ -248,21 +254,16 @@ fn check_delegation(accounts: &Pull, kind: PullKind, wallet: &Pubkey) -> Result<
     Ok(())
 }
 
-/// Anyone may close a receipt once its deposit's deadline has passed: the
-/// signature naming this id can no longer be used, so the id needs no guard.
+/// Kept for instruction compatibility; spent markers can no longer be closed.
 #[derive(Accounts)]
 pub struct CloseReceipt<'info> {
-    #[account(mut, has_one = rent_payer, close = rent_payer)]
+    #[account(mut, has_one = rent_payer)]
     pub receipt: Account<'info, DepositReceipt>,
     /// CHECK: only receives lamports; must match `receipt.rent_payer`.
     #[account(mut)]
     pub rent_payer: UncheckedAccount<'info>,
 }
 
-pub fn handle_close_receipt(ctx: Context<CloseReceipt>) -> Result<()> {
-    require!(
-        Clock::get()?.unix_timestamp > ctx.accounts.receipt.expires_at,
-        SwishError::ReceiptNotExpired
-    );
-    Ok(())
+pub fn handle_close_receipt(_ctx: Context<CloseReceipt>) -> Result<()> {
+    err!(SwishError::ReceiptPermanent)
 }

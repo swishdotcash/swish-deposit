@@ -7,6 +7,8 @@ import pg from "pg";
 export interface Db {
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
   exec?(sql: string): Promise<unknown>;
+  /** All statements use one connection and commit or roll back together. */
+  transaction?<T>(run: (db: Db) => Promise<T>): Promise<T>;
 }
 
 /**
@@ -18,9 +20,25 @@ export function connectionString(url: string): string {
   return url.replace(/([?&])sslrootcert=system(&|$)/, (_m, before: string, after: string) => (after ? before : ""));
 }
 
-export function connect(url: string): pg.Pool {
+export function connect(url: string): pg.Pool & Db {
   // numeric(20,0) comes back as a string by default; keep it that way (u64).
-  return new pg.Pool({ connectionString: connectionString(url), max: 5 });
+  const pool = new pg.Pool({ connectionString: connectionString(url), max: 5 });
+  return Object.assign(pool, {
+    async transaction<T>(run: (db: Db) => Promise<T>): Promise<T> {
+      const client = await pool.connect();
+      try {
+        await client.query("begin isolation level read committed");
+        const result = await run(client);
+        await client.query("commit");
+        return result;
+      } catch (e) {
+        await client.query("rollback");
+        throw e;
+      } finally {
+        client.release();
+      }
+    },
+  });
 }
 
 const MIGRATIONS = fileURLToPath(new URL("../migrations/", import.meta.url));

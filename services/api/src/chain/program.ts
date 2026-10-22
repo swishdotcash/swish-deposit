@@ -85,6 +85,16 @@ export function pullChallenge(c: PullChallenge): Uint8Array {
   );
 }
 
+/** Stable across refreshed approvals; mirrors PullChallenge::payment_commitment. */
+export function paymentCommitment(c: Omit<PullChallenge, "expiresAt">): Uint8Array {
+  const amount = Buffer.alloc(8);
+  amount.writeBigUInt64LE(c.amount);
+  return sha256(
+    Buffer.from("swish-deposit/receipt/v1"), c.clusterTag, addressBytes(c.programId),
+    c.depositId, c.appId, addressBytes(c.mint), addressBytes(c.destination), amount,
+  );
+}
+
 /** Anchor's instruction discriminator. */
 const discriminator = (name: string) => sha256(Buffer.from(`global:${name}`)).subarray(0, 8);
 
@@ -101,7 +111,7 @@ export async function registerAppInstruction(admin: TransactionSigner, appId: Ui
   };
 }
 
-/** Closes a deposit's receipt once its deadline has passed; the rent goes back to `rentPayer`. */
+/** @deprecated The program rejects this instruction; receipts are permanent. */
 export async function closeReceiptInstruction(depositId: Uint8Array, rentPayer: Address): Promise<Instruction> {
   return {
     programAddress: PROGRAM_ID,

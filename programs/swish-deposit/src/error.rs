@@ -44,4 +44,6 @@ pub enum SwishError {
     ReceiptNotExpired,
     #[msg("Unlink every wallet before closing a Swish ID")]
     SwishIdHasWallets,
+    #[msg("Deposit receipts are permanent spent markers and cannot be closed")]
+    ReceiptPermanent,
 }

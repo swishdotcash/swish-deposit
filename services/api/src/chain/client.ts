@@ -64,6 +64,15 @@ import {
   pullerPda,
   receiptPda,
 } from "./program.js";
+import { decodeDepositReceipt, type DepositReceipt } from "./receipt.js";
+
+export interface PendingTransaction {
+  signature: string;
+  lastValidBlockHeight: bigint;
+}
+
+export type BeforeBroadcast = (transaction: PendingTransaction) => Promise<void>;
+export type TransactionStatus = "pending" | "confirmed" | "failed" | "expired";
 
 /** One linked wallet that can pay a deposit right now. */
 export interface Source {
@@ -136,14 +145,17 @@ export interface Chain {
   linkedWallet(wallet: Address): Promise<LinkedWallet | null>;
   /** The wallet's Foundation authority for this mint, if it has one. */
   subscriptionAuthority(wallet: Address, mint: Address): Promise<{ initId: bigint } | null>;
-  /** A deposit's receipt: who paid its rent. Null once closed (or never made). */
-  receipt(depositId: Uint8Array): Promise<{ rentPayer: Address } | null>;
+  /** A validated permanent receipt, including the executed payment commitment. */
+  receipt(depositId: Uint8Array): Promise<DepositReceipt | null>;
+  transactionStatus(signature: string, lastValidBlockHeight: bigint | null): Promise<TransactionStatus>;
+  /** Whether finalized chain time has passed the approval's deadline. */
+  approvalExpired(expiresAt: bigint): Promise<boolean>;
   /** The wallet's token balance in base units; null when it has no token account. */
   tokenBalance(wallet: Address, mint: Address): Promise<bigint | null>;
   /** Whether an account exists. */
   exists(account: Address): Promise<boolean>;
   /** Signs as sponsor, sends, and waits for confirmation. Returns the signature. */
-  send(instructions: Instruction[]): Promise<string>;
+  send(instructions: Instruction[], beforeBroadcast?: BeforeBroadcast): Promise<string>;
   /** The same, with another fee payer (e.g. the admin registering an app). */
   sendAs(feePayer: TransactionSigner, instructions: Instruction[]): Promise<string>;
   /** Built with the sponsor as fee payer; the wallet signs it, then we do. */
@@ -162,8 +174,9 @@ export class ChainError extends Error {
   constructor(
     message: string,
     readonly signature?: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 
@@ -366,12 +379,36 @@ export class SolanaChain implements Chain {
     return token.exists ? token.data.amount : null;
   }
 
-  async receipt(depositId: Uint8Array): Promise<{ rentPayer: Address } | null> {
-    const { value } = await this.rpc.getAccountInfo(await receiptPda(depositId), { encoding: "base64" }).send();
+  async receipt(depositId: Uint8Array): Promise<DepositReceipt | null> {
+    const { value } = await this.rpc.getAccountInfo(await receiptPda(depositId), { encoding: "base64", commitment: "confirmed" }).send();
     if (!value) return null;
-    // DepositReceipt: discriminator (8) · expires_at (8) · rent_payer (32) · bump
-    const data = getBase64Encoder().encode(value.data[0]);
-    return { rentPayer: getAddressDecoder().decode(data.subarray(16, 48)) };
+    return decodeDepositReceipt(value.owner, getBase64Encoder().encode(value.data[0]) as Uint8Array);
+  }
+
+  async transactionStatus(signature: string, lastValidBlockHeight: bigint | null): Promise<TransactionStatus> {
+    const { value } = await this.rpc.getSignatureStatuses([signature as Signature], { searchTransactionHistory: true }).send();
+    const status = value[0];
+    if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") {
+      return status.err ? "failed" : "confirmed";
+    }
+    if (status) return "pending"; // processed is not a settled outcome
+    if (lastValidBlockHeight !== null && await this.rpc.getBlockHeight({ commitment: "finalized" }).send() > lastValidBlockHeight) {
+      // Ask again AFTER the expiry read, covering a transaction that landed
+      // between the first status read and the finalized block-height read.
+      const again = await this.rpc.getSignatureStatuses([signature as Signature], { searchTransactionHistory: true }).send();
+      const landed = again.value[0];
+      if (landed?.confirmationStatus === "confirmed" || landed?.confirmationStatus === "finalized") {
+        return landed.err ? "failed" : "confirmed";
+      }
+      return landed ? "pending" : "expired";
+    }
+    return "pending";
+  }
+
+  async approvalExpired(expiresAt: bigint): Promise<boolean> {
+    const slot = await this.rpc.getSlot({ commitment: "finalized" }).send();
+    const time = await this.rpc.getBlockTime(slot).send();
+    return time !== null && time > expiresAt;
   }
 
   async exists(account: Address): Promise<boolean> {
@@ -393,14 +430,16 @@ export class SolanaChain implements Chain {
     );
   }
 
-  async send(instructions: Instruction[]): Promise<string> {
+  async send(instructions: Instruction[], beforeBroadcast?: BeforeBroadcast): Promise<string> {
     const message = await this.message(instructions);
     const tx = await signTransactionMessageWithSigners(
       this.lookup
         ? compressTransactionMessageUsingAddressLookupTables(message, { [this.lookup.table]: this.lookup.addresses })
         : message,
     );
-    return this.sendAndConfirm(tx);
+    return this.sendAndConfirm(tx, beforeBroadcast ? async (signature) => {
+      await beforeBroadcast({ signature, lastValidBlockHeight: message.lifetimeConstraint.lastValidBlockHeight });
+    } : undefined);
   }
 
   async sendAs(feePayer: TransactionSigner, instructions: Instruction[]): Promise<string> {
@@ -425,19 +464,27 @@ export class SolanaChain implements Chain {
     return this.sendAndConfirm(await partiallySignTransaction([this.sponsor.keyPair], tx));
   }
 
-  private async sendAndConfirm(tx: Transaction): Promise<string> {
+  private async sendAndConfirm(tx: Transaction, beforeBroadcast?: (signature: string) => Promise<void>): Promise<string> {
     const signature = getSignatureFromTransaction(tx);
-    await this.rpc
-      .sendTransaction(getBase64EncodedWireTransaction(tx), { encoding: "base64", preflightCommitment: "confirmed" })
-      .send();
-    const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      const { value } = await this.rpc.getSignatureStatuses([signature]).send();
-      const status = value[0];
-      if (status?.err) throw new ChainError(`transaction failed: ${JSON.stringify(status.err, bigintJson)}`, signature);
-      if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return signature;
-      await new Promise((r) => setTimeout(r, 1000));
+    // A failed persistence callback MUST prevent any broadcast.
+    await beforeBroadcast?.(signature);
+    try {
+      await this.rpc
+        .sendTransaction(getBase64EncodedWireTransaction(tx), { encoding: "base64", preflightCommitment: "confirmed" })
+        .send();
+      const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        const { value } = await this.rpc.getSignatureStatuses([signature]).send();
+        const status = value[0];
+        if (status?.err) throw new ChainError(`transaction failed: ${JSON.stringify(status.err, bigintJson)}`, signature);
+        if (status?.confirmationStatus === "confirmed" || status?.confirmationStatus === "finalized") return signature;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      throw new ChainError("transaction not confirmed in time", signature);
+    } catch (e) {
+      if (e instanceof ChainError) throw e;
+      // A failed HTTP response can follow a successful broadcast.
+      throw new ChainError(e instanceof Error ? e.message : "transaction outcome unknown", signature, { cause: e });
     }
-    throw new ChainError("transaction not confirmed in time", signature);
   }
 }

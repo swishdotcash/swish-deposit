@@ -15,15 +15,17 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createApp } from "../src/app.js";
-import type { Allowance, Chain, Source } from "../src/chain/client.js";
+import type { Allowance, BeforeBroadcast, Chain, Source, TransactionStatus } from "../src/chain/client.js";
 import { ChainError } from "../src/chain/client.js";
-import { PROGRAM_ID, SECP256R1_PROGRAM, TOKEN_PROGRAM, receiptPda, swishIdPda, uuidBytes } from "../src/chain/program.js";
+import { PROGRAM_ID, SECP256R1_PROGRAM, TOKEN_PROGRAM, paymentCommitment, swishIdPda, uuidBytes } from "../src/chain/program.js";
+import { InvalidReceiptError, type DepositReceipt } from "../src/chain/receipt.js";
 import { b64url, fromB64url } from "../src/chain/webauthn.js";
 import type { Deps } from "../src/context.js";
 import { migrate, type Db } from "../src/db.js";
 import { hashKey, newPublishableKey, newSecretKey } from "../src/keys.js";
-import { closeReceipts } from "../src/receipts.js";
-import { signWebhook } from "../src/webhooks.js";
+import { expectedPayment, reconcilePendingDeposits } from "../src/settlement.js";
+import { deliverPendingWebhooks, signWebhook } from "../src/webhooks.js";
+import type { DepositRow } from "../src/routes/deposits.js";
 import { fakePasskey } from "./helpers.js";
 
 const ORIGIN = "https://app.example.com";
@@ -47,7 +49,7 @@ class FakeChain implements Chain {
   walletAllowances: Allowance[] = [];
   linkedTo: Address | null = null;
   balance: bigint | null = 1_000_000_000n;
-  constructor(readonly sponsor: KeyPairSigner) {}
+  constructor(readonly sponsor: KeyPairSigner, readonly appId: string) {}
   async clusterTag() {
     return new Uint8Array(32).fill(1);
   }
@@ -55,6 +57,7 @@ class FakeChain implements Chain {
     return (await findAssociatedTokenPda({ owner, mint, tokenProgram: TOKEN_PROGRAM }))[0];
   }
   async findSource(_swishId: Address, _mint: Address, _amount: bigint, only?: Address) {
+    await this.beforeSource?.();
     return this.source && (!only || only === this.source.wallet) ? this.source : null;
   }
   async linkedWallets() {
@@ -81,9 +84,24 @@ class FakeChain implements Chain {
     return this.linkedTo ? { swishId: this.linkedTo, rentPayer: this.sponsor.address } : null;
   }
   /** Receipts on chain, by deposit id bytes (hex). */
-  receipts = new Set<string>();
+  receipts = new Map<string, DepositReceipt>();
+  receiptError: Error | null = null;
+  outcome: TransactionStatus = "pending";
+  finalizedExpired = false;
+  landBeforeError = false;
+  receiptLag = false;
+  beforeSend: (() => Promise<void>) | null = null;
+  beforeSource: (() => Promise<void>) | null = null;
   async receipt(depositId: Uint8Array) {
-    return this.receipts.has(Buffer.from(depositId).toString("hex")) ? { rentPayer: this.sponsor.address } : null;
+    if (this.receiptError) throw this.receiptError;
+    if (this.receiptLag) return null;
+    return this.receipts.get(Buffer.from(depositId).toString("hex")) ?? null;
+  }
+  async transactionStatus() {
+    return this.outcome;
+  }
+  async approvalExpired() {
+    return this.finalizedExpired;
   }
   async tokenBalance() {
     return this.balance;
@@ -91,8 +109,25 @@ class FakeChain implements Chain {
   async exists(a: Address) {
     return this.existing.has(a);
   }
-  async send(instructions: Instruction[]) {
+  async send(instructions: Instruction[], beforeBroadcast?: BeforeBroadcast) {
+    await beforeBroadcast?.({ signature: this.fail instanceof ChainError ? this.fail.signature ?? "5ig" : "5ig", lastValidBlockHeight: 100n });
+    await this.beforeSend?.();
     this.sent.push(instructions);
+    if (!this.fail || this.landBeforeError) {
+      const ix = instructions.at(-1)!;
+      const data = Buffer.from(ix.data!);
+      const depositId = data.subarray(8, 24);
+      this.receipts.set(depositId.toString("hex"), {
+        rentPayer: this.sponsor.address,
+        wallet: this.source!.wallet,
+        swishId: ix.accounts![3]!.address,
+        commitment: paymentCommitment({
+          clusterTag: await this.clusterTag(), programId: PROGRAM_ID, depositId,
+          appId: uuidBytes(this.appId), mint: ix.accounts![11]!.address,
+          destination: ix.accounts![10]!.address, amount: data.readBigUInt64LE(25),
+        }),
+      });
+    }
     if (this.fail) throw this.fail;
     return "5ig";
   }
@@ -127,16 +162,21 @@ interface World {
 
 async function world(): Promise<World> {
   const pg = new PGlite();
-  const db: Db = { query: (sql, params) => pg.query(sql, params) as never, exec: (sql) => pg.exec(sql) };
+  const db: Db = {
+    query: (sql, params) => pg.query(sql, params) as never,
+    exec: (sql) => pg.exec(sql),
+    transaction: (run) => pg.transaction((tx) => run({ query: (sql, params) => tx.query(sql, params) as never })),
+  };
   await migrate(db);
   const publishable = newPublishableKey();
   const secret = newSecretKey();
+  const appId = randomUUID();
   await db.query(
     `insert into apps (id, name, website, contact_email, allowed_origins, publishable_key, secret_key_hash, webhook_url)
      values ($1, 'Demo', 'https://example.com', 'ops@example.com', $2, $3, $4, 'https://example.com/hook')`,
-    [randomUUID(), [ORIGIN], publishable, hashKey(secret)],
+    [appId, [ORIGIN], publishable, hashKey(secret)],
   );
-  const chain = new FakeChain(await generateKeyPairSigner());
+  const chain = new FakeChain(await generateKeyPairSigner(), appId);
   const webhooks: World["webhooks"] = [];
   const deps: Deps = {
     db,
@@ -172,6 +212,15 @@ async function createDeposit(amount = "12.5", reference?: string) {
   const res = await server().post("/v1/deposits", { amount, token: "USDC", destination: USER_IN_APP, reference });
   expect(res.status).toBe(201);
   return res.body as { id: string; client_secret: string };
+}
+
+async function addReceipt(id: string, commitment?: Uint8Array) {
+  const d = (await w.deps.db.query<DepositRow>("select * from deposits where id = $1", [id])).rows[0]!;
+  w.chain.receipts.set(Buffer.from(uuidBytes(id)).toString("hex"), {
+    rentPayer: w.chain.sponsor.address,
+    commitment: commitment ?? await expectedPayment(w.deps, d),
+    wallet: addr(30), swishId: addr(34),
+  });
 }
 
 async function setUpUser() {
@@ -400,6 +449,7 @@ describe("one Face ID moves the money", () => {
   it("marks a failed transaction failed and tells your server", async () => {
     const user = await setUpUser();
     w.chain.fail = new ChainError("transaction failed: InsufficientFunds", "sig-x");
+    w.chain.outcome = "failed";
     const res = await approve(await createDeposit(), user);
     expect(res.body).toMatchObject({ status: "failed", signature: "sig-x" });
     expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.failed");
@@ -409,9 +459,98 @@ describe("one Face ID moves the money", () => {
     const user = await setUpUser();
     const d = await createDeposit();
     w.chain.fail = new ChainError("transaction not confirmed in time", "sig-y");
-    const { receiptPda, uuidBytes } = await import("../src/chain/program.js");
-    w.chain.existing.add(await receiptPda(uuidBytes(d.id)));
+    w.chain.landBeforeError = true;
     expect((await approve(d, user)).body.status).toBe("succeeded");
+  });
+
+  it("persists the signed transaction and lifetime before broadcasting", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    w.chain.beforeSend = async () => {
+      const row = (await w.deps.db.query("select signature, last_valid_block_height, status from deposits where id = $1", [d.id])).rows[0];
+      expect(row).toMatchObject({ signature: "5ig", last_valid_block_height: "100", status: "submitted" });
+    };
+    expect((await approve(d, user)).body.status).toBe("succeeded");
+  });
+
+  it("does not overwrite the actual payer or broadcast after a worker settles during preparation", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    w.chain.beforeSource = async () => {
+      await addReceipt(d.id);
+      const receipt = w.chain.receipts.get(Buffer.from(uuidBytes(d.id)).toString("hex"))!;
+      receipt.wallet = addr(99);
+      receipt.swishId = addr(98);
+      await reconcilePendingDeposits(w.deps);
+    };
+    const result = await approve(d, user);
+    expect(result.body).toMatchObject({ status: "succeeded", wallet: addr(99) });
+    expect(w.chain.sent).toHaveLength(0);
+    expect(JSON.parse(w.webhooks[0]!.body).data.wallet).toBe(addr(99));
+  });
+
+  it.each([new ChainError("confirmation timed out", "sig-pending"), new Error("connection dropped after broadcast")])(
+    "keeps an ambiguous send pending and credits late settlement after restart: %s", async (failure) => {
+      const user = await setUpUser();
+      const d = await createDeposit();
+      w.chain.fail = failure;
+      const pending = await approve(d, user);
+      expect(pending.body.status).toBe("submitted");
+      expect(pending.body.signature).toBeTruthy();
+      expect(w.webhooks).toHaveLength(0);
+      await addReceipt(d.id);
+      // A background worker can complete this without another customer request.
+      await reconcilePendingDeposits(w.deps);
+      await deliverPendingWebhooks(w.deps);
+      expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("succeeded");
+      expect(w.webhooks).toHaveLength(1);
+      expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.succeeded");
+    },
+  );
+
+  it("does not infer failure from a missing receipt, a processed status, or an RPC outage", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    w.chain.fail = new Error("RPC down");
+    expect((await approve(d, user)).body.status).toBe("submitted");
+    w.chain.receiptError = new Error("RPC still down");
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("submitted");
+    expect(w.webhooks).toHaveLength(0);
+    w.chain.receiptError = null;
+    w.chain.outcome = "expired";
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("failed");
+    expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.failed");
+  });
+
+  it("waits for the exact receipt even when the broadcast reports confirmation", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    w.chain.receiptLag = true;
+    w.chain.outcome = "confirmed";
+    expect((await approve(d, user)).body.status).toBe("submitted");
+    expect(w.webhooks).toHaveLength(0);
+    w.chain.receiptLag = false;
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("succeeded");
+    expect(w.webhooks).toHaveLength(1);
+  });
+
+  it("rejects a different payment that squatted the merchant deposit ID", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    await addReceipt(d.id, new Uint8Array(32).fill(99));
+    w.chain.fail = new ChainError("receipt already exists", "sig-squatted");
+    const result = await approve(d, user);
+    expect(result.body).toMatchObject({ status: "failed", error: "on-chain receipt does not match the requested payment" });
+    expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.failed");
+  });
+
+  it("never treats a spoofed or legacy receipt as proof of payment", async () => {
+    const user = await setUpUser();
+    w.chain.fail = new Error("send uncertain");
+    w.chain.receiptError = new InvalidReceiptError("invalid receipt owner");
+    const d = await createDeposit();
+    expect((await approve(d, user)).body.status).toBe("submitted");
+    expect(w.webhooks).toHaveLength(0);
   });
 
   it("refuses an approval that expired", async () => {
@@ -511,6 +650,30 @@ describe("setup", () => {
     w.chain.authority = { initId: 7n };
     w.chain.linkedTo = await swishIdPda(user.pk.publicKey);
     expect((await prepare(user, await createDeposit(), addr(43))).status).toBe(200);
+  });
+
+  it("reserves the final daily slot only once across concurrent deposits", async () => {
+    await w.deps.db.query("update apps set daily_new_wallets = 1");
+    const user = await setUpUser();
+    const deposits = await Promise.all([createDeposit(), createDeposit(), createDeposit()]);
+    const results = await Promise.all(deposits.map((d, i) => prepare(user, d, addr(40 + i))));
+    expect(results.map((r) => r.status).sort()).toEqual([200, 429, 429]);
+    const reserved = await w.deps.db.query<{ n: number }>("select count(*)::int as n from deposits where setup_new_wallet");
+    expect(reserved.rows[0]!.n).toBe(1);
+    const winner = results.findIndex((r) => r.status === 200);
+    expect((await prepare(user, deposits[winner]!, addr(40 + winner))).status).toBe(200);
+  });
+
+  it("dates a new-wallet reservation when sponsorship begins, not at an earlier linked-wallet setup", async () => {
+    await w.deps.db.query("update apps set daily_new_wallets = 1");
+    const user = await setUpUser();
+    const d = await createDeposit();
+    w.chain.linkedTo = await swishIdPda(user.pk.publicKey);
+    expect((await prepare(user, d, addr(40))).status).toBe(200);
+    await w.deps.db.query("update deposits set setup_at = now() - interval '2 days' where id = $1", [d.id]);
+    w.chain.linkedTo = null;
+    expect((await prepare(user, d, addr(40))).status).toBe(200);
+    expect((await prepare(user, await createDeposit(), addr(41))).status).toBe(429);
   });
 
   it("adds to a limit: what is left plus the new amount, replacing the allowance at the next free nonce", async () => {
@@ -657,56 +820,63 @@ describe("setup", () => {
   });
 });
 
-describe("closing receipts (rent back to Swish)", () => {
-  async function deposit(status: string, expiresAgoSeconds: number, onChain = true) {
+describe("durable settlement notifications", () => {
+  it("recognizes the same exact payment made with an earlier approval deadline", async () => {
+    const d = await createDeposit();
+    await widget(`/v1/deposits/${d.id}/challenge`, { client_secret: d.client_secret });
+    await addReceipt(d.id);
+    await w.deps.db.query(
+      "update deposits set status = 'submitted', expires_at = expires_at + interval '30 seconds' where id = $1", [d.id],
+    );
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("succeeded");
+  });
+
+  it("uses finalized chain expiry to resolve a restart before signing or broadcasting", async () => {
     const d = await createDeposit();
     await w.deps.db.query(
-      `update deposits set status = $2, expires_at = now() - make_interval(secs => $3) where id = $1`,
-      [d.id, status, expiresAgoSeconds],
+      "update deposits set status = 'submitted', expires_at = now() - interval '5 minutes' where id = $1", [d.id],
     );
-    if (onChain) w.chain.receipts.add(Buffer.from(uuidBytes(d.id)).toString("hex"));
-    return d.id;
-  }
-  const closedAt = async (id: string) =>
-    (await w.deps.db.query<{ receipt_closed_at: Date | null }>("select receipt_closed_at from deposits where id = $1", [id]))
-      .rows[0]!.receipt_closed_at;
-
-  it("closes finished deposits' receipts, 8 to a transaction, to whoever paid the rent", async () => {
-    const done = [];
-    for (let i = 0; i < 9; i++) done.push(await deposit("succeeded", 60));
-    const { closed, signatures } = await closeReceipts(w.deps);
-    expect(closed).toBe(9);
-    expect(signatures).toHaveLength(2);
-    expect(w.chain.sent.map((ixs) => ixs.length)).toEqual([8, 1]);
-    const [ix] = w.chain.sent[1]!;
-    expect(ix!.programAddress).toBe(PROGRAM_ID);
-    expect(ix!.accounts!.map((a) => a.address)).toEqual([await receiptPda(uuidBytes(done[8]!)), w.chain.sponsor.address]);
-    for (const id of done) expect(await closedAt(id)).not.toBeNull();
-    expect((await closeReceipts(w.deps)).closed).toBe(0);
-  });
-
-  it("leaves receipts still needed: not yet past the deadline, or a deposit still being checked", async () => {
-    const fresh = await deposit("succeeded", -60);
-    const inFlight = await deposit("submitted", 60);
-    const failed = await deposit("failed", 60, false);
-    expect((await closeReceipts(w.deps)).closed).toBe(0);
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("submitted");
+    expect(w.webhooks).toHaveLength(0);
+    w.chain.finalizedExpired = true;
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("failed");
     expect(w.chain.sent).toHaveLength(0);
-    for (const id of [fresh, inFlight, failed]) expect(await closedAt(id)).toBeNull();
   });
 
-  it("marks one someone else already closed without sending anything", async () => {
-    const id = await deposit("succeeded", 60, false);
-    expect((await closeReceipts(w.deps)).closed).toBe(0);
-    expect(w.chain.sent).toHaveLength(0);
-    expect(await closedAt(id)).not.toBeNull();
+  it("delivers a success discovered by GET, exactly once after acknowledgement", async () => {
+    const d = await createDeposit();
+    await w.deps.db.query("update deposits set status = 'submitted' where id = $1", [d.id]);
+    await addReceipt(d.id);
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("succeeded");
+    expect(w.webhooks).toHaveLength(1);
+    await server().get(`/v1/deposits/${d.id}`);
+    await deliverPendingWebhooks(w.deps);
+    expect(w.webhooks).toHaveLength(1);
   });
 
-  it("leaves a batch open when its transaction fails, for the next run", async () => {
-    const id = await deposit("succeeded", 60);
-    w.chain.fail = new Error("blockhash expired");
-    expect((await closeReceipts(w.deps)).closed).toBe(0);
-    expect(await closedAt(id)).toBeNull();
-    w.chain.fail = null;
-    expect((await closeReceipts(w.deps)).closed).toBe(1);
+  it("retries persisted terminal events after HTTP failure and a worker restart", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    w.deps.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
+    expect((await approve(d, user)).body.status).toBe("succeeded");
+    const row = (await w.deps.db.query("select webhook_delivered_at, webhook_attempts from deposits where id = $1", [d.id])).rows[0];
+    expect(row).toMatchObject({ webhook_delivered_at: null, webhook_attempts: 1 });
+    await w.deps.db.query("update deposits set webhook_next_attempt_at = now() - interval '1 second' where id = $1", [d.id]);
+    w.deps.fetch = (async (_url, init) => {
+      w.webhooks.push({ url: "retry", body: String(init?.body), signature: "" });
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+    await Promise.all([deliverPendingWebhooks(w.deps), deliverPendingWebhooks(w.deps)]);
+    expect(w.webhooks).toHaveLength(1);
+    expect(JSON.parse(w.webhooks[0]!.body)).toMatchObject({ type: "deposit.succeeded", data: { id: d.id } });
+  });
+
+  it("recovers a lease abandoned by a crashed worker", async () => {
+    const d = await createDeposit();
+    await w.deps.db.query(
+      "update deposits set status = 'succeeded', webhook_lease_until = now() - interval '1 second' where id = $1", [d.id],
+    );
+    await deliverPendingWebhooks(w.deps);
+    expect(w.webhooks).toHaveLength(1);
   });
 });

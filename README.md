@@ -101,11 +101,30 @@ Tests:
 
 ```sh
 cd services/api && npm test
+cd apps/pay && npm test
 cd packages/js && npm test
 npm run program:test        # from the repo root; builds and tests the program
 ```
 
 To build or deploy the program under your own address, see [docs/local-program-id.md](docs/local-program-id.md).
+
+The hosted frame chooses its API from `VITE_SWISH_API_URL` at build time
+(default: `https://api.swish.cash`; local Vite development: `http://localhost:3000`).
+Embedding pages cannot override that endpoint. Set it explicitly for staging.
+
+Payment settlement verifies the on-chain receipt's owner, layout and commitment to
+the requested transfer. Broadcast timeouts stay `submitted` while a background
+worker reconciles them. Terminal results are persisted webhook jobs and retry
+until acknowledged; integrations must deduplicate events by deposit ID.
+
+Receipts are permanent payment proofs and spent markers. Their rent is retained
+to prevent approvals with different deadlines from charging the same deposit
+twice. This receipt layout requires the updated contract and API together. Before
+upgrading an existing deployment, stop the old receipt-cleanup worker and resolve
+in-flight payments. Legacy receipts without a commitment require transaction-level
+review; previously closed receipts cannot be restored. Use a fresh program ID or
+an explicit legacy-deposit cutover. Apply API migrations before starting the new
+API. See [the security change design](specs/payment-security-fixes.md).
 
 ## Deployed on devnet
 

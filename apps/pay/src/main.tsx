@@ -18,7 +18,9 @@ import { isMessage, type FromFrame, type ToFrame } from "core/protocol";
 import { browserWallets } from "core/wallet";
 
 import { App, type Session } from "./App";
+import { trustedApiUrl } from "./trustedApi";
 
+const apiUrl = trustedApiUrl(import.meta.env.VITE_SWISH_API_URL, import.meta.env.DEV);
 const root = createRoot(document.getElementById("root")!);
 const memory = browserMemory();
 let session: (Session & { page: string }) | null = null;
@@ -32,7 +34,7 @@ function open(m: Extract<ToFrame, { swish: "open" }>, page: string) {
     { id: m.depositId, clientSecret: m.clientSecret },
     {
       // The API lets this frame in only for a page the app registered.
-      api: createApi(m.publishableKey, m.apiUrl, page),
+      api: createApi(m.publishableKey, apiUrl, page),
       // The frame asks for the passkey first; a Swish window is used if that fails.
       passkeys: windowPasskeys(browserPasskeys(), `${location.origin}/passkey.html`, theme),
       wallets: browserWallets(m.cluster),
@@ -70,7 +72,7 @@ function open(m: Extract<ToFrame, { swish: "open" }>, page: string) {
 
 async function unlink(m: Extract<ToFrame, { swish: "unlink" }>, page: string) {
   try {
-    const api = createApi(m.publishableKey, m.apiUrl, page);
+    const api = createApi(m.publishableKey, apiUrl, page);
     const wallet = await browserWallets(m.cluster).connect(m.wallet);
     const step = await api.unlinkWallet(wallet.address);
     if (!step.done) {
