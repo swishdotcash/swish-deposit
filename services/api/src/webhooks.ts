@@ -4,6 +4,8 @@ import type { AppRow, Deps } from "./context.js";
 import { depositView, type DepositRow } from "./routes/deposits.js";
 
 const TIMEOUT_MS = 10_000;
+/** 30 s, doubling to at most an hour between tries; about a day in all. */
+const MAX_ATTEMPTS = 30;
 
 /**
  * `Swish-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">`.
@@ -15,7 +17,7 @@ export function signWebhook(secretKeyHash: string, timestamp: number, body: stri
   return `t=${timestamp},v1=${v1}`;
 }
 
-/** Claim one durable job. Delivery is at least once; deduplicate by deposit ID. */
+/** Claim one durable job. Delivery is at least once; deduplicate by deposit ID. Never throws. */
 export async function sendWebhook(deps: Deps, app: AppRow, deposit: DepositRow): Promise<void> {
   if (!app.webhook_url) return;
   if (deposit.status !== "succeeded" && deposit.status !== "failed") return;
@@ -24,9 +26,10 @@ export async function sendWebhook(deps: Deps, app: AppRow, deposit: DepositRow):
     const { rows } = await deps.db.query<DepositRow & { webhook_attempts: number; webhook_lease_until: Date }>(
       `update deposits set webhook_lease_until = now() + interval '30 seconds', webhook_attempts = webhook_attempts + 1
        where id = $1 and status in ('succeeded', 'failed') and webhook_delivered_at is null
+         and webhook_attempts < $2
          and webhook_next_attempt_at <= now() and (webhook_lease_until is null or webhook_lease_until < now())
        returning *`,
-      [deposit.id],
+      [deposit.id, MAX_ATTEMPTS],
     );
     const job = rows[0];
     if (!job) return;
@@ -52,7 +55,8 @@ export async function sendWebhook(deps: Deps, app: AppRow, deposit: DepositRow):
     // Keep the row pending even when the process exits during this update.
     // An abandoned lease becomes claimable automatically.
     await deps.db.query(
-      `update deposits set webhook_next_attempt_at = now() + interval '30 seconds', webhook_lease_until = null
+      `update deposits set webhook_lease_until = null,
+         webhook_next_attempt_at = now() + least(interval '30 seconds' * power(2, $2 - 1), interval '1 hour')
        where id = $1 and webhook_delivered_at is null and webhook_attempts = $2`,
       [deposit.id, attempt ?? -1],
     ).catch(() => {});
@@ -63,8 +67,10 @@ export async function deliverPendingWebhooks(deps: Deps): Promise<void> {
   const { rows } = await deps.db.query<DepositRow>(
     `select d.* from deposits d join apps a on a.id = d.app_id
      where d.status in ('succeeded', 'failed') and d.webhook_delivered_at is null and a.webhook_url is not null
+       and d.webhook_attempts < $1
        and d.webhook_next_attempt_at <= now() and (d.webhook_lease_until is null or d.webhook_lease_until < now())
      order by d.webhook_next_attempt_at, d.id limit 100`,
+    [MAX_ATTEMPTS],
   );
   for (const deposit of rows) {
     const app = (await deps.db.query<AppRow>("select * from apps where id = $1", [deposit.app_id])).rows[0];

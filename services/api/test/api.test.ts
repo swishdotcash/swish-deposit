@@ -12,7 +12,7 @@ import {
 } from "@solana/kit";
 import { findAssociatedTokenPda } from "@solana-program/token";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createApp } from "../src/app.js";
 import type { Allowance, BeforeBroadcast, Chain, Source, TransactionStatus } from "../src/chain/client.js";
@@ -333,7 +333,7 @@ describe("one Face ID moves the money", () => {
     expect(pull.subarray(8, 24)).toEqual(Buffer.from(d.id.replace(/-/g, ""), "hex"));
     expect(pull.readBigUInt64LE(25)).toBe(12_500_000n);
 
-    expect(w.webhooks).toHaveLength(1);
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     const hook = w.webhooks[0]!;
     expect(JSON.parse(hook.body)).toMatchObject({ type: "deposit.succeeded", data: { id: d.id, reference: "order-7" } });
     const t = Number(/t=(\d+)/.exec(hook.signature)![1]);
@@ -360,6 +360,7 @@ describe("one Face ID moves the money", () => {
     expect((await server().get("/v1/deposits?limit=1")).body.data).toHaveLength(1);
     expect((await server().get("/v1/deposits?wallet=nope")).status).toBe(400);
     // The webhook names the wallet too.
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     expect(JSON.parse(w.webhooks[0]!.body).data.wallet).toBe(wallet);
   });
 
@@ -452,6 +453,7 @@ describe("one Face ID moves the money", () => {
     w.chain.outcome = "failed";
     const res = await approve(await createDeposit(), user);
     expect(res.body).toMatchObject({ status: "failed", signature: "sig-x" });
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.failed");
   });
 
@@ -486,6 +488,7 @@ describe("one Face ID moves the money", () => {
     const result = await approve(d, user);
     expect(result.body).toMatchObject({ status: "succeeded", wallet: addr(99) });
     expect(w.chain.sent).toHaveLength(0);
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     expect(JSON.parse(w.webhooks[0]!.body).data.wallet).toBe(addr(99));
   });
 
@@ -503,7 +506,7 @@ describe("one Face ID moves the money", () => {
       await reconcilePendingDeposits(w.deps);
       await deliverPendingWebhooks(w.deps);
       expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("succeeded");
-      expect(w.webhooks).toHaveLength(1);
+      await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
       expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.succeeded");
     },
   );
@@ -519,6 +522,7 @@ describe("one Face ID moves the money", () => {
     w.chain.receiptError = null;
     w.chain.outcome = "expired";
     expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("failed");
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.failed");
   });
 
@@ -531,7 +535,7 @@ describe("one Face ID moves the money", () => {
     expect(w.webhooks).toHaveLength(0);
     w.chain.receiptLag = false;
     expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("succeeded");
-    expect(w.webhooks).toHaveLength(1);
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
   });
 
   it("rejects a different payment that squatted the merchant deposit ID", async () => {
@@ -541,6 +545,7 @@ describe("one Face ID moves the money", () => {
     w.chain.fail = new ChainError("receipt already exists", "sig-squatted");
     const result = await approve(d, user);
     expect(result.body).toMatchObject({ status: "failed", error: "on-chain receipt does not match the requested payment" });
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.failed");
   });
 
@@ -848,7 +853,7 @@ describe("durable settlement notifications", () => {
     await w.deps.db.query("update deposits set status = 'submitted' where id = $1", [d.id]);
     await addReceipt(d.id);
     expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("succeeded");
-    expect(w.webhooks).toHaveLength(1);
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     await server().get(`/v1/deposits/${d.id}`);
     await deliverPendingWebhooks(w.deps);
     expect(w.webhooks).toHaveLength(1);
@@ -859,8 +864,11 @@ describe("durable settlement notifications", () => {
     const d = await createDeposit();
     w.deps.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
     expect((await approve(d, user)).body.status).toBe("succeeded");
-    const row = (await w.deps.db.query("select webhook_delivered_at, webhook_attempts from deposits where id = $1", [d.id])).rows[0];
-    expect(row).toMatchObject({ webhook_delivered_at: null, webhook_attempts: 1 });
+    // Delivery runs after the response; wait for the failed attempt to be recorded.
+    const pending = "select webhook_delivered_at, webhook_attempts, webhook_lease_until from deposits where id = $1";
+    await vi.waitFor(async () =>
+      expect((await w.deps.db.query(pending, [d.id])).rows[0]).toMatchObject({ webhook_delivered_at: null, webhook_attempts: 1, webhook_lease_until: null }),
+    );
     await w.deps.db.query("update deposits set webhook_next_attempt_at = now() - interval '1 second' where id = $1", [d.id]);
     w.deps.fetch = (async (_url, init) => {
       w.webhooks.push({ url: "retry", body: String(init?.body), signature: "" });
@@ -878,5 +886,23 @@ describe("durable settlement notifications", () => {
     );
     await deliverPendingWebhooks(w.deps);
     expect(w.webhooks).toHaveLength(1);
+  });
+
+  it("backs off between failed webhooks and gives up after the last attempt", async () => {
+    const d = await createDeposit();
+    await w.deps.db.query("update deposits set status = 'succeeded', webhook_attempts = 3 where id = $1", [d.id]);
+    w.deps.fetch = (async () => new Response(null, { status: 503 })) as typeof fetch;
+    await deliverPendingWebhooks(w.deps);
+    const { rows } = await w.deps.db.query<{ delay: number }>(
+      "select extract(epoch from webhook_next_attempt_at - now())::float as delay from deposits where id = $1", [d.id],
+    );
+    expect(rows[0]!.delay).toBeGreaterThan(230); // 30 s · 2³ after the 4th attempt
+    expect(rows[0]!.delay).toBeLessThanOrEqual(240);
+
+    await w.deps.db.query(
+      "update deposits set webhook_attempts = 30, webhook_next_attempt_at = now() - interval '1 second' where id = $1", [d.id],
+    );
+    await deliverPendingWebhooks(w.deps);
+    expect((await w.deps.db.query("select webhook_attempts from deposits where id = $1", [d.id])).rows[0]).toMatchObject({ webhook_attempts: 30 });
   });
 });

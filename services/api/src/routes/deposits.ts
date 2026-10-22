@@ -185,7 +185,7 @@ export function depositsRouter(deps: Deps): Router {
   router.get("/v1/deposits/:id", secret, async (req, res) => {
     const app = currentApp(res);
     const d = await reconcileDeposit(deps, await load(String(req.params.id), app));
-    await sendWebhook(deps, app, d);
+    void sendWebhook(deps, app, d);
     res.json(depositView(d));
   });
 
@@ -290,7 +290,7 @@ export function depositsRouter(deps: Deps): Router {
     );
     if (!ready[0]) {
       const settled = await load(deposit.id, app);
-      await sendWebhook(deps, app, settled);
+      void sendWebhook(deps, app, settled);
       res.json(depositView(settled));
       return;
     }
@@ -309,7 +309,8 @@ export function depositsRouter(deps: Deps): Router {
       console.warn(`[deposit] ${deposit.id}: ${e instanceof ChainError ? "broadcast outcome requires reconciliation" : "submission interrupted"}`);
     }
     const final = await reconcileDeposit(deps, pending);
-    await sendWebhook(deps, app, final);
+    // Never makes the payer wait on the merchant's server; the worker retries.
+    void sendWebhook(deps, app, final);
     res.json(depositView(final));
   });
 
