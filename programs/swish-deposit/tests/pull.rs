@@ -331,6 +331,29 @@ impl Env {
         self.send_as_admin(&[ix]).unwrap();
     }
 
+    fn retire_ix(&self, authority: &Pubkey) -> Instruction {
+        self.ix(
+            swish_deposit::accounts::Retire {
+                authority: *authority,
+                config: pda(&[CONFIG_SEED]),
+                program: swish_deposit::ID,
+                program_data: program_data_address(),
+            },
+            swish_deposit::instruction::Retire {},
+        )
+    }
+
+    fn close_receipt_ix(&self, deposit_id: &[u8; 16], rent_payer: &Pubkey) -> Instruction {
+        self.ix(
+            swish_deposit::accounts::CloseReceipt {
+                config: pda(&[CONFIG_SEED]),
+                receipt: receipt_address(deposit_id),
+                rent_payer: *rent_payer,
+            },
+            swish_deposit::instruction::CloseReceipt {},
+        )
+    }
+
     fn warp(&mut self, seconds: i64) {
         let mut clock: Clock = self.svm.get_sysvar();
         clock.unix_timestamp += seconds;
@@ -1054,7 +1077,7 @@ fn refreshed_approvals_cannot_replay_a_deposit_after_its_first_deadline() {
 
     let receipt = receipt_address(&d.deposit_id);
     let close = env.ix(
-        swish_deposit::accounts::CloseReceipt { receipt, rent_payer: env.sponsor.pubkey() },
+        swish_deposit::accounts::CloseReceipt { config: pda(&[CONFIG_SEED]), receipt, rent_payer: env.sponsor.pubkey() },
         swish_deposit::instruction::CloseReceipt {},
     );
     assert_error(env.send_sponsored(std::slice::from_ref(&close), &[]), SwishError::ReceiptPermanent);
@@ -1105,4 +1128,109 @@ fn the_payment_commitment_matches_the_api_and_ignores_approval_deadlines() {
     assert_eq!(hex, "dcfaf7c4fb9620b1091ff3895428c902dac310426c2a9f3bd215b928cae732ef");
     payment.expires_at += 60;
     assert_eq!(payment.payment_commitment(), commitment);
+}
+
+// ---- retiring ----
+
+#[test]
+fn only_the_upgrade_authority_can_retire_not_the_admin_or_anyone_else() {
+    let mut env = mainnet();
+    let upgrade_authority = env.admin.insecure_clone();
+    // Hand the admin role to another key, as production will.
+    let admin = Keypair::new();
+    env.svm.airdrop(&admin.pubkey(), 1_000_000_000).unwrap();
+    let propose = env.ix(
+        swish_deposit::accounts::AdminOnly { admin: upgrade_authority.pubkey(), config: pda(&[CONFIG_SEED]) },
+        swish_deposit::instruction::ProposeAdmin { new_admin: admin.pubkey() },
+    );
+    env.send_as_admin(&[propose]).unwrap();
+    let accept = env.ix(
+        swish_deposit::accounts::AcceptAdmin { pending_admin: admin.pubkey(), config: pda(&[CONFIG_SEED]) },
+        swish_deposit::instruction::AcceptAdmin {},
+    );
+    env.send(&[accept], &[&admin]).unwrap();
+
+    let by_admin = env.retire_ix(&admin.pubkey());
+    assert_error(env.send(&[by_admin], &[&admin]), SwishError::NotUpgradeAuthority);
+    let stranger = Keypair::new();
+    env.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let by_stranger = env.retire_ix(&stranger.pubkey());
+    assert_error(env.send(&[by_stranger], &[&stranger]), SwishError::NotUpgradeAuthority);
+
+    // Deposits still work after both attempts.
+    let user = env.new_user(units(100), units(50), PullKind::Fixed);
+    let in_app = env.app_account();
+    let d = deposit(&mut env, &user, 0, units(5), in_app);
+    submit(&mut env, &d, &Assertion::by(&user.passkey)).unwrap();
+
+    let retire = env.retire_ix(&upgrade_authority.pubkey());
+    env.send(&[retire], &[&upgrade_authority]).unwrap();
+    let d = deposit(&mut env, &user, 0, units(5), in_app);
+    assert_error(submit(&mut env, &d, &Assertion::by(&user.passkey)), SwishError::Retired);
+}
+
+#[test]
+fn retiring_is_final_and_stops_every_deposit() {
+    let mut env = mainnet();
+    let user = env.new_user(units(100), units(50), PullKind::Fixed);
+    let in_app = env.app_account();
+    // Signed before retiring, still inside its deadline.
+    let d = deposit(&mut env, &user, 0, units(5), in_app);
+    let s = sign(&env, &d, &Assertion::by(&user.passkey));
+    env.set_paused(true);
+    let retire = env.retire_ix(&env.admin.pubkey());
+    env.send_as_admin(&[retire]).unwrap();
+
+    assert_error(submit_signed(&mut env, &d, &s), SwishError::Retired);
+    for paused in [false, true] {
+        let switch = env.ix(
+            swish_deposit::accounts::AdminOnly { admin: env.admin.pubkey(), config: pda(&[CONFIG_SEED]) },
+            swish_deposit::instruction::SetPaused { paused },
+        );
+        assert_error(env.send_as_admin(&[switch]), SwishError::Retired);
+    }
+    assert_error(submit_signed(&mut env, &d, &s), SwishError::Retired);
+    let fresh = deposit(&mut env, &user, 0, units(5), in_app);
+    assert_error(submit(&mut env, &fresh, &Assertion::by(&user.passkey)), SwishError::Retired);
+    assert_eq!(env.balance(&in_app), 0);
+}
+
+#[test]
+fn receipts_close_only_once_retired_and_only_back_to_their_rent_payer() {
+    let mut env = mainnet();
+    let user = env.new_user(units(100), units(50), PullKind::Fixed);
+    let in_app = env.app_account();
+    let d = deposit(&mut env, &user, 0, units(5), in_app);
+    let s = sign(&env, &d, &Assertion::by(&user.passkey));
+    submit_signed(&mut env, &d, &s).unwrap();
+    let receipt = receipt_address(&d.deposit_id);
+    let sponsor = env.sponsor.pubkey();
+
+    // Live, then paused: the receipt stays.
+    let close = env.close_receipt_ix(&d.deposit_id, &sponsor);
+    assert_error(env.send_sponsored(std::slice::from_ref(&close), &[]), SwishError::ReceiptPermanent);
+    env.set_paused(true);
+    assert_error(env.send_sponsored(std::slice::from_ref(&close), &[]), SwishError::ReceiptPermanent);
+
+    let retire = env.retire_ix(&env.admin.pubkey());
+    env.send_as_admin(&[retire]).unwrap();
+
+    // Nobody can take the rent for themselves.
+    let attacker = Keypair::new();
+    env.svm.airdrop(&attacker.pubkey(), 1_000_000_000).unwrap();
+    let steal = env.close_receipt_ix(&d.deposit_id, &attacker.pubkey());
+    let err = env.send(&[steal], &[&attacker]).expect_err("rent went to the wrong account");
+    assert!(err.contains("Custom(2001)"), "expected ConstraintHasOne, got: {err}");
+    assert!(env.exists(&receipt));
+
+    // Anyone may close it; the rent goes back to the sponsor that paid it.
+    let rent = env.lamports(&receipt);
+    let before = env.lamports(&sponsor);
+    env.send(&[close], &[&attacker]).unwrap();
+    assert!(!env.exists(&receipt));
+    assert_eq!(env.lamports(&sponsor), before + rent);
+
+    // With its receipt gone, the deposit still cannot be paid again.
+    assert_error(submit_signed(&mut env, &d, &s), SwishError::Retired);
+    assert_eq!(env.balance(&in_app), units(5));
 }

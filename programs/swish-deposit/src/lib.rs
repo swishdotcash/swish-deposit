@@ -48,6 +48,12 @@ pub mod swish_deposit {
         instructions::admin::handle_set_paused(ctx, paused)
     }
 
+    /// The upgrade authority, once and for good. Stops every deposit and lets
+    /// receipts be closed for their rent.
+    pub fn retire(ctx: Context<Retire>) -> Result<()> {
+        instructions::admin::handle_retire(ctx)
+    }
+
     pub fn set_rp_id_hash(ctx: Context<AdminOnly>, rp_id_hash: [u8; 32]) -> Result<()> {
         instructions::admin::handle_set_rp_id_hash(ctx, rp_id_hash)
     }
@@ -82,7 +88,7 @@ pub mod swish_deposit {
         instructions::pull::handle_pull(ctx, args)
     }
 
-    /// Deprecated: always rejects because receipts are permanent spent markers.
+    /// Anyone, once retired. The rent goes back to whoever paid it.
     pub fn close_receipt(ctx: Context<CloseReceipt>) -> Result<()> {
         instructions::pull::handle_close_receipt(ctx)
     }

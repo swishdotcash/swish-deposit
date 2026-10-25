@@ -119,7 +119,9 @@ until acknowledged; integrations must deduplicate events by deposit ID.
 
 Receipts are permanent payment proofs and spent markers. Their rent is retained
 to prevent approvals with different deadlines from charging the same deposit
-twice. This receipt layout requires the updated contract and API together. Before
+twice. The upgrade authority can `retire` the program, once and for good: every
+deposit stops, and only then can anyone close a receipt, its rent going back to
+whoever paid it. This receipt layout requires the updated contract and API together. Before
 upgrading an existing deployment, stop the old receipt-cleanup worker and resolve
 in-flight payments. Legacy receipts without a commitment require transaction-level
 review; previously closed receipts cannot be restored. Use a fresh program ID or

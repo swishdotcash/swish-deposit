@@ -11,7 +11,9 @@ pub struct Config {
     pub cluster_tag: [u8; 32],
     /// sha256 of the WebAuthn relying party id (`swish.cash`).
     pub rp_id_hash: [u8; 32],
-    pub paused: bool,
+    /// [`LIVE`], [`PAUSED`] or [`RETIRED`]. One byte where `paused: bool` was,
+    /// so an upgraded deployment reads its existing config unchanged.
+    pub status: u8,
     pub bump: u8,
     pub puller_bump: u8,
 }

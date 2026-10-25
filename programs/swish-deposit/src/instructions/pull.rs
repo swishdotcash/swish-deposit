@@ -39,7 +39,12 @@ pub struct Pull<'info> {
     /// Pays the receipt's rent (Swish, in production).
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(seeds = [CONFIG_SEED], bump = config.bump, constraint = !config.paused @ SwishError::Paused)]
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        constraint = config.status != RETIRED @ SwishError::Retired,
+        constraint = config.status == LIVE @ SwishError::Paused
+    )]
     pub config: Box<Account<'info, Config>>,
     #[account(
         seeds = [APP_SEED, app.app_id.as_ref()],
@@ -254,10 +259,18 @@ fn check_delegation(accounts: &Pull, kind: PullKind, wallet: &Pubkey) -> Result<
     Ok(())
 }
 
-/// Kept for instruction compatibility; spent markers can no longer be closed.
+/// Receipts are spent markers: a later approval may name the same deposit id
+/// with a later deadline. Once retired, no pull can run, so anyone may close
+/// them; the rent only ever goes back to whoever paid it.
 #[derive(Accounts)]
 pub struct CloseReceipt<'info> {
-    #[account(mut, has_one = rent_payer)]
+    #[account(
+        seeds = [CONFIG_SEED],
+        bump = config.bump,
+        constraint = config.status == RETIRED @ SwishError::ReceiptPermanent
+    )]
+    pub config: Account<'info, Config>,
+    #[account(mut, has_one = rent_payer, close = rent_payer)]
     pub receipt: Account<'info, DepositReceipt>,
     /// CHECK: only receives lamports; must match `receipt.rent_payer`.
     #[account(mut)]
@@ -265,5 +278,5 @@ pub struct CloseReceipt<'info> {
 }
 
 pub fn handle_close_receipt(_ctx: Context<CloseReceipt>) -> Result<()> {
-    err!(SwishError::ReceiptPermanent)
+    Ok(())
 }

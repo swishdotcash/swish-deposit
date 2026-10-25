@@ -111,11 +111,11 @@ export async function registerAppInstruction(admin: TransactionSigner, appId: Ui
   };
 }
 
-/** @deprecated The program rejects this instruction; receipts are permanent. */
+/** Closes a receipt for its rent; the program allows it only once retired. */
 export async function closeReceiptInstruction(depositId: Uint8Array, rentPayer: Address): Promise<Instruction> {
   return {
     programAddress: PROGRAM_ID,
-    accounts: [w(await receiptPda(depositId)), w(rentPayer)],
+    accounts: [r(await configPda()), w(await receiptPda(depositId)), w(rentPayer)],
     data: discriminator("close_receipt"),
   };
 }
