@@ -11,7 +11,9 @@ pub struct Config {
     pub cluster_tag: [u8; 32],
     /// sha256 of the WebAuthn relying party id (`swish.cash`).
     pub rp_id_hash: [u8; 32],
-    pub paused: bool,
+    /// [`LIVE`], [`PAUSED`] or [`RETIRED`]. One byte where `paused: bool` was,
+    /// so an upgraded deployment reads its existing config unchanged.
+    pub status: u8,
     pub bump: u8,
     pub puller_bump: u8,
 }
@@ -50,15 +52,19 @@ pub struct LinkedWallet {
     pub bump: u8,
 }
 
-/// Marks a deposit id as used. Address: [`RECEIPT_SEED`, deposit_id]. Can be
-/// closed once the deposit's deadline has passed, when the signature that
-/// named this id is useless anyway.
+/// Permanently marks a deposit id as used. Address: [`RECEIPT_SEED`, deposit_id].
+/// A later approval may name the same id with a different deadline, so this
+/// account must never be closed, even after this particular approval expires.
 #[account]
 #[derive(InitSpace)]
 pub struct DepositReceipt {
     pub expires_at: i64,
     pub rent_payer: Pubkey,
     pub bump: u8,
+    /// Binds all payment details, independently of the approval's deadline.
+    pub commitment: [u8; 32],
+    pub wallet: Pubkey,
+    pub swish_id: Pubkey,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]

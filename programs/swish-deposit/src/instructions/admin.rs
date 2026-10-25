@@ -39,7 +39,7 @@ pub fn handle_initialize(ctx: Context<Initialize>, args: InitializeArgs) -> Resu
         pending_admin: Pubkey::default(),
         cluster_tag: args.cluster_tag,
         rp_id_hash: args.rp_id_hash,
-        paused: false,
+        status: LIVE,
         bump: ctx.bumps.config,
         puller_bump,
     });
@@ -64,7 +64,32 @@ pub fn handle_propose_admin(ctx: Context<AdminOnly>, new_admin: Pubkey) -> Resul
 }
 
 pub fn handle_set_paused(ctx: Context<AdminOnly>, paused: bool) -> Result<()> {
-    ctx.accounts.config.paused = paused;
+    let config = &mut ctx.accounts.config;
+    require!(config.status != RETIRED, SwishError::Retired);
+    config.status = if paused { PAUSED } else { LIVE };
+    Ok(())
+}
+
+/// The upgrade authority, not the admin: it can already replace the program,
+/// so this adds no power to it, and a stolen admin key cannot end deposits.
+#[derive(Accounts)]
+pub struct Retire<'info> {
+    pub authority: Signer<'info>,
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+    #[account(constraint = program.programdata_address()? == Some(program_data.key()))]
+    pub program: Program<'info, SwishDeposit>,
+    #[account(
+        constraint = program_data.upgrade_authority_address == Some(authority.key())
+            @ SwishError::NotUpgradeAuthority
+    )]
+    pub program_data: Account<'info, ProgramData>,
+}
+
+/// Ends deposits for good: nothing in this program sets `status` back. Only
+/// then can receipts be closed, since no pull can ever spend a deposit id again.
+pub fn handle_retire(ctx: Context<Retire>) -> Result<()> {
+    ctx.accounts.config.status = RETIRED;
     Ok(())
 }
 

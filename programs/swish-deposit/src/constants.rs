@@ -18,5 +18,10 @@ pub const PULLER_SEED: &[u8] = b"puller";
 /// to what goes into the challenge.
 pub const PULL_DOMAIN: &[u8] = b"swish-deposit/pull/v2";
 
+/// `Config.status`. Only `LIVE` allows deposits; `RETIRED` is final.
+pub const LIVE: u8 = 0;
+pub const PAUSED: u8 = 1;
+pub const RETIRED: u8 = 2;
+
 /// The longest a signed deposit stays valid.
 pub const MAX_SIGNATURE_LIFETIME_SECS: i64 = 120;

@@ -151,21 +151,30 @@ export function setupRouter(deps: Deps): Router {
    * the app's daily cap on new wallets, once.
    */
   async function bindWallet(d: DepositRow, app: AppRow, wallet: Address, isNew: boolean) {
-    const { rows } = await db.query<DepositRow>(
-      `update deposits set
-         setup_wallet = $2,
-         setup_at = coalesce(setup_at, now()),
-         setup_new_wallet = setup_new_wallet or $3::boolean,
-         updated_at = now()
-       where id = $1 and status = 'created'
-         and (setup_wallet is null or setup_wallet = $2)
-         and (not $3::boolean or setup_new_wallet or (
-           select count(*) from deposits
-           where app_id = $4 and setup_new_wallet and setup_at > now() - interval '1 day'
-         ) < $5)
-       returning *`,
-      [d.id, wallet, isNew, app.id, app.daily_new_wallets],
-    );
+    if (!db.transaction) throw new Error("setup reservations require database transactions");
+    const rows = await db.transaction(async (tx) => {
+      // Lock a shared row, then count in a NEW statement (fresh READ COMMITTED
+      // snapshot). Locks on individual deposits cannot serialize an app quota.
+      const { rows: apps } = await tx.query<AppRow>("select * from apps where id = $1 for update", [app.id]);
+      const locked = apps[0];
+      if (!locked?.active) throw conflict("app_inactive", "This app is not active.");
+      const result = await tx.query<DepositRow>(
+        `update deposits set
+           setup_wallet = $2,
+           setup_at = case when $3::boolean and not setup_new_wallet then now() else coalesce(setup_at, now()) end,
+           setup_new_wallet = setup_new_wallet or $3::boolean,
+           updated_at = now()
+         where id = $1 and status = 'created'
+           and (setup_wallet is null or setup_wallet = $2)
+           and (not $3::boolean or setup_new_wallet or (
+             select count(*) from deposits
+             where app_id = $4 and setup_new_wallet and setup_at > now() - interval '1 day'
+           ) < $5)
+         returning *`,
+        [d.id, wallet, isNew, app.id, locked.daily_new_wallets],
+      );
+      return result.rows;
+    });
     if (rows[0]) return;
     const { rows: current } = await db.query<DepositRow>("select * from deposits where id = $1", [d.id]);
     const c = current[0]!;

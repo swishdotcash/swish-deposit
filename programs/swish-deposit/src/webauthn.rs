@@ -124,6 +124,22 @@ pub struct PullChallenge<'a> {
 }
 
 impl PullChallenge<'_> {
+    /// Identifies the payment independently of a particular approval's deadline.
+    /// Refreshed approvals for the same payment must reconcile to the same receipt.
+    pub fn payment_commitment(&self) -> [u8; 32] {
+        hashv(&[
+            b"swish-deposit/receipt/v1",
+            self.cluster_tag,
+            self.program_id.as_ref(),
+            self.deposit_id,
+            self.app_id,
+            self.mint.as_ref(),
+            self.destination.as_ref(),
+            &self.amount.to_le_bytes(),
+        ])
+        .to_bytes()
+    }
+
     pub fn hash(&self) -> [u8; 32] {
         hashv(&[
             crate::constants::PULL_DOMAIN,

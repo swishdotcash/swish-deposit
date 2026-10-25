@@ -16,8 +16,14 @@ const TYPES = {
   ".json": "application/json",
 };
 
-createServer((req, res) => {
-  const path = normalize(decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname));
+const server = createServer((req, res) => {
+  let path;
+  try {
+    path = normalize(decodeURIComponent(new URL(req.url ?? "/", "http://x").pathname));
+    if (path.includes("\0")) throw new URIError("invalid path");
+  } catch {
+    return res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }).end("Invalid request path");
+  }
   if (path === "/health") return res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
   let file = join(dist, path);
   if (!file.startsWith(dist) || !existsSync(file) || statSync(file).isDirectory()) file = join(dist, "index.html");
@@ -30,4 +36,5 @@ createServer((req, res) => {
     ...(path.startsWith("/fonts/") ? { "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400" } : {}),
   });
   createReadStream(file).pipe(res);
-}).listen(PORT, "::", () => console.log(`swish-deposit frame on :${PORT}`));
+});
+server.listen(PORT, "::", () => console.log(`swish-deposit frame on :${server.address().port}`));

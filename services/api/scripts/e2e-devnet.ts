@@ -45,7 +45,6 @@ import { SolanaChain } from "../src/chain/client.js";
 import { b64url, fromB64url } from "../src/chain/webauthn.js";
 import { receiptPda, uuidBytes } from "../src/chain/program.js";
 import { migrate, type Db } from "../src/db.js";
-import { closeReceipts } from "../src/receipts.js";
 import { registerApp } from "../src/registerApp.js";
 import { fakePasskey } from "../test/helpers.js";
 
@@ -95,7 +94,11 @@ console.log(
 
 // ---- The API, in this process, with an in-memory database ----
 const pg = new PGlite();
-const db: Db = { query: (sql, params) => pg.query(sql, params) as never, exec: (sql) => pg.exec(sql) };
+const db: Db = {
+  query: (sql, params) => pg.query(sql, params) as never,
+  exec: (sql) => pg.exec(sql),
+  transaction: (run) => pg.transaction((tx) => run({ query: (sql, params) => tx.query(sql, params) as never })),
+};
 await migrate(db);
 step("the sponsor's lookup table for deposits (keeps them under the transaction size limit)");
 console.log(`   ${await ensureLookupTable(db, chain, mint.address)}`);
@@ -258,27 +261,14 @@ const [walletAfter, landedAfter] = await Promise.all([balance(userWallet.address
 const leftAfter = (await chain.allowances(userWallet.address, mint.address))[0]?.amount;
 console.log(`   user's wallet: ${Number(walletAfter) / 1e6} · in the app: ${Number(landedAfter) / 1e6} · allowance left: ${Number(leftAfter) / 1e6}`);
 
-step("once their approval window has passed, close both receipts: the rent goes back to the sponsor");
-const { rows: due } = await db.query<{ latest: Date }>("select max(expires_at) as latest from deposits where status = 'succeeded'");
-const waitMs = new Date(due[0]!.latest).getTime() + 5_000 - Date.now();
-if (waitMs > 0) {
-  console.log(`   waiting ${Math.ceil(waitMs / 1000)} s for the deadline to pass on chain`);
-  await new Promise((r) => setTimeout(r, waitMs));
-}
+step("both receipts remain as permanent payment proofs and spent markers");
 const receipts = [await receiptPda(uuidBytes(String(first.id))), await receiptPda(uuidBytes(String(forty.id)))];
 const rentHeld = (await Promise.all(receipts.map((a) => rpc.getBalance(a).send()))).reduce((s, b) => s + b.value, 0n);
-const beforeClose = (await rpc.getBalance(sponsor.address).send()).value;
-const cleanup = await closeReceipts({ db, chain });
-const afterClose = (await rpc.getBalance(sponsor.address).send()).value;
-const receiptsGone = (await Promise.all(receipts.map((a) => chain.exists(a)))).every((e) => !e);
-console.log(`   closed ${cleanup.closed}:`, cleanup.signatures.map(tx).join(" "));
-console.log(
-  `   ${receiptsGone ? "✓" : "✗"} receipts gone · rent held ${Number(rentHeld) / 1e9} SOL · sponsor ${Number(afterClose - beforeClose) / 1e9} SOL net (rent back minus the fee)`,
-);
-const rentBack = cleanup.closed === 2 && receiptsGone && afterClose > beforeClose;
+const receiptsKept = (await Promise.all(receipts.map((a) => chain.exists(a)))).every(Boolean);
+console.log(`   ${receiptsKept ? "✓" : "✗"} receipts retained · rent held ${Number(rentHeld) / 1e9} SOL`);
 
 const ok =
-  rentBack &&
+  receiptsKept &&
   bare &&
   tooBig &&
   sponsorUntouched &&
