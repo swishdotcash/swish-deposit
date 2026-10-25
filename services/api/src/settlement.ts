@@ -14,6 +14,11 @@ export async function expectedPayment(deps: Pick<Deps, "chain">, d: DepositRow):
   });
 }
 
+/** `expires_at` is the newest approval's deadline, so it covers every approval issued. */
+function approvalPassed(deps: Pick<Deps, "chain">, expiresAt: Date): Promise<boolean> {
+  return deps.chain.approvalExpired(BigInt(Math.floor(new Date(expiresAt).getTime() / 1000)));
+}
+
 /** Only validated chain evidence can turn a submitted payment into a result. */
 export async function reconcileDeposit(deps: Deps, d: DepositRow): Promise<DepositRow> {
   if (d.status !== "submitted") return d;
@@ -35,6 +40,9 @@ export async function reconcileDeposit(deps: Deps, d: DepositRow): Promise<Depos
     } else if (d.signature) {
       const outcome = await deps.chain.transactionStatus(d.signature, d.last_valid_block_height === null ? null : BigInt(d.last_valid_block_height));
       if (outcome === "failed" || outcome === "expired") {
+        // A failed transaction exposes its signed approval: anyone can rebuild
+        // the pull and land it until the approval's deadline. Not final before.
+        if (d.expires_at && !await approvalPassed(deps, d.expires_at)) return d;
         // Re-read after checking status/expiry, covering a late landing between
         // the first account read and the transaction-status read.
         if (await deps.chain.receipt(uuidBytes(d.id))) return reconcileDeposit(deps, d);
@@ -42,7 +50,7 @@ export async function reconcileDeposit(deps: Deps, d: DepositRow): Promise<Depos
         error = outcome === "failed" ? "transaction failed on chain" : "transaction expired without settlement";
       }
       // Confirmed success without a visible receipt is still uncertain.
-    } else if (d.expires_at && await deps.chain.approvalExpired(BigInt(Math.floor(new Date(d.expires_at).getTime() / 1000)))) {
+    } else if (d.expires_at && await approvalPassed(deps, d.expires_at)) {
       if (await deps.chain.receipt(uuidBytes(d.id))) return reconcileDeposit(deps, d);
       status = "failed";
       error = "approval expired before settlement";

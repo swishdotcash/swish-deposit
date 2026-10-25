@@ -447,14 +447,31 @@ describe("one Face ID moves the money", () => {
     expect(res.body.error.code).toBe("no_swish_id");
   });
 
-  it("marks a failed transaction failed and tells your server", async () => {
+  it("marks a failed transaction failed once its approval has expired, and tells your server", async () => {
     const user = await setUpUser();
+    const d = await createDeposit();
     w.chain.fail = new ChainError("transaction failed: InsufficientFunds", "sig-x");
     w.chain.outcome = "failed";
-    const res = await approve(await createDeposit(), user);
-    expect(res.body).toMatchObject({ status: "failed", signature: "sig-x" });
+    // Anyone can still land the exposed approval until its deadline.
+    expect((await approve(d, user)).body).toMatchObject({ status: "submitted", signature: "sig-x" });
+    expect(w.webhooks).toHaveLength(0);
+    w.chain.finalizedExpired = true;
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("failed");
     await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.failed");
+  });
+
+  it("credits a failed transaction's approval replayed before its deadline", async () => {
+    const user = await setUpUser();
+    const d = await createDeposit();
+    w.chain.fail = new ChainError("transaction failed: InsufficientFunds", "sig-x");
+    w.chain.outcome = "failed";
+    expect((await approve(d, user)).body.status).toBe("submitted");
+    await addReceipt(d.id);
+    w.chain.finalizedExpired = true;
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("succeeded");
+    await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
+    expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.succeeded");
   });
 
   it("counts a timed-out send as done when the receipt is on chain", async () => {
@@ -521,6 +538,8 @@ describe("one Face ID moves the money", () => {
     expect(w.webhooks).toHaveLength(0);
     w.chain.receiptError = null;
     w.chain.outcome = "expired";
+    expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("submitted");
+    w.chain.finalizedExpired = true;
     expect((await server().get(`/v1/deposits/${d.id}`)).body.status).toBe("failed");
     await vi.waitFor(() => expect(w.webhooks).toHaveLength(1));
     expect(JSON.parse(w.webhooks[0]!.body).type).toBe("deposit.failed");
